@@ -331,7 +331,7 @@ fn arm_is_exclusive_and_lock_only_protects_clip_editing() -> Result<()> {
     let clip = &store.project.tracks[1].clips[0];
     assert_eq!(clip.start, 2.125);
     assert_eq!(clip.duration, 1024. / SAMPLE_RATE as f64);
-    let pcm = std::fs::read(store.pcm(&clip.asset_id))?;
+    let pcm = std::fs::read(store.pcm(clip.asset_id.as_deref().unwrap()))?;
     assert!(
         pcm.as_chunks::<4>()
             .0

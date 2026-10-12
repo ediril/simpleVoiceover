@@ -25,19 +25,21 @@ fn setup() -> Result<(tempfile::TempDir, Store)> {
     };
     store.project.tracks[1].clips.push(Clip {
         id: id(),
-        asset_id: asset.id.clone(),
+        asset_id: Some(asset.id.clone()),
         name: asset.name.clone(),
         start: 1.,
         offset: 1.,
         duration: 8.,
+        script: None,
     });
     store.project.tracks[2].clips.push(Clip {
         id: id(),
-        asset_id: asset.id.clone(),
+        asset_id: Some(asset.id.clone()),
         name: asset.name.clone(),
         start: 2.,
         offset: 0.,
         duration: 5.,
+        script: None,
     });
     store.project.assets.push(asset);
     store.project.validate()?;

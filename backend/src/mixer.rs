@@ -72,18 +72,20 @@ impl Mixer {
                 let clip_end = clip_start + (clip.duration * SAMPLE_RATE as f64).round() as u64;
                 let from = start.max(clip_start);
                 let to = (start + frames as u64).min(clip_end);
+                let Some(asset_id) = &clip.asset_id else {
+                    continue;
+                };
                 if from >= to {
                     continue;
                 }
-                if !self.readers.contains_key(&clip.asset_id) {
-                    let (path, offset, length) =
-                        self.locations.get(&clip.asset_id).ok_or_else(|| {
-                            anyhow::anyhow!(crate::i18n::message("error.sourceCacheMissing"))
-                        })?;
+                if !self.readers.contains_key(asset_id) {
+                    let (path, offset, length) = self.locations.get(asset_id).ok_or_else(|| {
+                        anyhow::anyhow!(crate::i18n::message("error.sourceCacheMissing"))
+                    })?;
                     self.readers
-                        .insert(clip.asset_id.clone(), (File::open(path)?, *offset, *length));
+                        .insert(asset_id.clone(), (File::open(path)?, *offset, *length));
                 }
-                let (file, base, length) = self.readers.get_mut(&clip.asset_id).unwrap();
+                let (file, base, length) = self.readers.get_mut(asset_id).unwrap();
                 let source = (clip.offset * SAMPLE_RATE as f64).round() as u64 + from - clip_start;
                 let available = (*length / 8).saturating_sub(source).min(to - from) as usize;
                 if available == 0 {

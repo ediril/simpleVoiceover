@@ -37,6 +37,8 @@ mod regions;
 #[cfg(test)]
 mod regions_tests;
 mod runtime;
+#[cfg(test)]
+mod script_tests;
 mod server;
 #[cfg(test)]
 mod server_tests;

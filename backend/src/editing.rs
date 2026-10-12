@@ -1,6 +1,6 @@
 use crate::commands::{number, text};
 use crate::{
-    model::{Clip, SAMPLE_RATE, Track, id},
+    model::{Clip, MIN_SCRIPT_SLOT, SAMPLE_RATE, Script, Track, id},
     storage::Store,
 };
 use anyhow::{Context, Result, bail, ensure};
@@ -16,13 +16,24 @@ pub fn execute(store: &mut Store, value: &Value) -> Result<()> {
                 project.assets.iter().any(|asset| asset.id == asset_id),
                 crate::i18n::message("error.sourceMissing")
             );
+            let uses_asset = |clip: &Clip| clip.asset_id.as_deref() == Some(asset_id);
             ensure!(
-                !project.tracks.iter().any(|track| track.locked
-                    && track.clips.iter().any(|clip| clip.asset_id == asset_id)),
+                !project
+                    .tracks
+                    .iter()
+                    .any(|track| track.locked && track.clips.iter().any(uses_asset)),
                 crate::i18n::message("error.assetOnLockedTrack")
             );
             for track in &mut project.tracks {
-                track.clips.retain(|clip| clip.asset_id != asset_id);
+                track
+                    .clips
+                    .retain(|clip| clip.script.is_some() || !uses_asset(clip));
+                for clip in track.clips.iter_mut().filter(|clip| uses_asset(clip)) {
+                    clip.asset_id = None;
+                    if let Some(script) = &mut clip.script {
+                        script.take = None;
+                    }
+                }
             }
             project.assets.retain(|asset| asset.id != asset_id);
             store.replace(project)?;
@@ -98,11 +109,12 @@ pub fn execute(store: &mut Store, value: &Value) -> Result<()> {
             );
             track.clips.push(Clip {
                 id: id(),
-                asset_id: asset.id,
+                asset_id: Some(asset.id),
                 name: asset.name,
                 start: number(value, "position")?.max(0.),
                 offset: 0.,
                 duration: asset.duration,
+                script: None,
             });
             store.replace(project)?;
         }
@@ -124,6 +136,10 @@ pub fn execute(store: &mut Store, value: &Value) -> Result<()> {
                 track.clips.remove(index);
             } else if command == "clip_split" {
                 let original = track.clips[index].clone();
+                ensure!(
+                    original.script.is_none(),
+                    crate::i18n::message("error.scriptClipSplit")
+                );
                 let cut = (number(value, "position")? * SAMPLE_RATE as f64).round()
                     / SAMPLE_RATE as f64
                     - original.start;
@@ -147,6 +163,14 @@ pub fn execute(store: &mut Store, value: &Value) -> Result<()> {
                 let delta = number(value, "delta")?;
                 match text(value, "mode")? {
                     "move" => clip.start = (clip.start + delta).max(0.),
+                    "left" if clip.script.is_some() => {
+                        let d = delta.clamp(-clip.start, (clip.duration - MIN_SCRIPT_SLOT).max(0.));
+                        clip.start += d;
+                        clip.duration -= d;
+                    }
+                    "right" if clip.script.is_some() => {
+                        clip.duration = (clip.duration + delta).max(MIN_SCRIPT_SLOT);
+                    }
                     "left" => {
                         let d = delta.clamp(
                             -clip.start.min(clip.offset),
@@ -159,8 +183,8 @@ pub fn execute(store: &mut Store, value: &Value) -> Result<()> {
                     "right" => {
                         let duration = assets
                             .iter()
-                            .find(|a| a.id == clip.asset_id)
-                            .unwrap()
+                            .find(|a| clip.asset_id.as_deref() == Some(a.id.as_str()))
+                            .context(crate::i18n::message("error.sourceMissing"))?
                             .duration;
                         clip.duration = (clip.duration + delta)
                             .clamp(1. / SAMPLE_RATE as f64, duration - clip.offset);
@@ -168,6 +192,55 @@ pub fn execute(store: &mut Store, value: &Value) -> Result<()> {
                     _ => bail!(crate::i18n::message("error.editTool")),
                 }
             }
+            store.replace(project)?;
+        }
+        "script_add" => {
+            let mut project = store.project.clone();
+            let track = project
+                .tracks
+                .iter_mut()
+                .find(|t| Some(t.id.as_str()) == value["trackId"].as_str())
+                .context(crate::i18n::message("error.trackMissing"))?;
+            ensure!(
+                !track.locked && track.kind != "video",
+                crate::i18n::message("error.selectCompatibleTrack")
+            );
+            let clip_id = text(value, "clipId")?;
+            uuid::Uuid::parse_str(clip_id)?;
+            track.clips.push(Clip {
+                id: clip_id.into(),
+                asset_id: None,
+                name: String::new(),
+                start: number(value, "position")?.max(0.),
+                offset: 0.,
+                duration: number(value, "duration")?.max(MIN_SCRIPT_SLOT),
+                script: Some(Script {
+                    text: String::new(),
+                    take: None,
+                }),
+            });
+            store.replace(project)?;
+        }
+        "script_patch" => {
+            let mut project = store.project.clone();
+            let track = project
+                .tracks
+                .iter_mut()
+                .find(|t| Some(t.id.as_str()) == value["trackId"].as_str())
+                .context(crate::i18n::message("error.trackMissing"))?;
+            ensure!(!track.locked, crate::i18n::message("error.trackLocked"));
+            let script = track
+                .clips
+                .iter_mut()
+                .find(|c| Some(c.id.as_str()) == value["clipId"].as_str())
+                .and_then(|clip| clip.script.as_mut())
+                .context(crate::i18n::message("error.clipMissing"))?;
+            script.text = text(value, "text")?.trim().into();
+            store.replace(project)?;
+        }
+        "project_voice" => {
+            let mut project = store.project.clone();
+            project.voice = value["voice"].as_str().map(Into::into);
             store.replace(project)?;
         }
         _ => bail!(crate::i18n::message("error.editCommand")),

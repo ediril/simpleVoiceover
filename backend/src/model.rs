@@ -1,4 +1,4 @@
-use anyhow::{Result, ensure};
+use anyhow::{Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -96,12 +96,33 @@ impl Effects {
 #[serde(rename_all = "camelCase")]
 pub struct Clip {
     pub id: String,
-    pub asset_id: String,
+    pub asset_id: Option<String>,
     pub name: String,
     pub start: f64,
     pub offset: f64,
     pub duration: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub script: Option<Script>,
 }
+
+#[derive(Clone, Serialize, Deserialize, PartialEq, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct Script {
+    pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub take: Option<Take>,
+}
+
+#[derive(Clone, Serialize, Deserialize, PartialEq, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct Take {
+    pub text: String,
+    pub voice: String,
+}
+
+pub const MAX_SCRIPT_TEXT: usize = 5000;
+pub const MAX_VOICE_NAME: usize = 200;
+pub const MIN_SCRIPT_SLOT: f64 = 0.25;
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -171,6 +192,8 @@ pub struct Project {
     pub name: String,
     pub tracks: Vec<Track>,
     pub assets: Vec<Asset>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub voice: Option<String>,
 }
 impl Project {
     pub fn new() -> Self {
@@ -184,6 +207,7 @@ impl Project {
                 Track::new("audio", "track.music"),
             ],
             assets: vec![],
+            voice: None,
         }
     }
     pub fn duration(&self) -> f64 {
@@ -199,6 +223,12 @@ impl Project {
             crate::i18n::message("error.projectVersion")
         );
         Uuid::parse_str(&self.id)?;
+        ensure!(
+            self.voice
+                .as_ref()
+                .is_none_or(|voice| !voice.is_empty() && voice.len() <= MAX_VOICE_NAME),
+            crate::i18n::message("error.scriptVoice")
+        );
         ensure!(
             self.tracks.len() <= 128 && self.assets.len() <= 10000,
             crate::i18n::message("error.projectItemCount")
@@ -259,22 +289,40 @@ impl Project {
                     ids.insert(c.id.clone()),
                     crate::i18n::message("error.duplicateId")
                 );
-                let a = self
-                    .assets
-                    .iter()
-                    .find(|a| a.id == c.asset_id)
-                    .ok_or_else(|| {
-                        anyhow::anyhow!(crate::i18n::message("error.clipSourceMissing"))
-                    })?;
+                let asset =
+                    match &c.asset_id {
+                        Some(asset_id) => {
+                            Some(self.assets.iter().find(|a| &a.id == asset_id).ok_or_else(
+                                || anyhow::anyhow!(crate::i18n::message("error.clipSourceMissing")),
+                            )?)
+                        }
+                        None => None,
+                    };
                 ensure!(
                     [c.start, c.offset, c.duration]
                         .iter()
                         .all(|x| x.is_finite() && *x >= 0.)
                         && c.duration > 0.
-                        && c.offset + c.duration <= a.duration + 0.001
                         && c.start <= 2_000_000.,
                     crate::i18n::message("error.clipBounds")
                 );
+                match (&c.script, asset) {
+                    (Some(script), asset) => {
+                        ensure!(
+                            t.kind != "video"
+                                && c.offset == 0.
+                                && script.text.len() <= MAX_SCRIPT_TEXT
+                                && script.take.is_some() == asset.is_some()
+                                && asset.is_none_or(|a| a.kind == "audio"),
+                            crate::i18n::message("error.scriptClip")
+                        );
+                    }
+                    (None, Some(a)) => ensure!(
+                        c.offset + c.duration <= a.duration + 0.001,
+                        crate::i18n::message("error.clipBounds")
+                    ),
+                    (None, None) => bail!(crate::i18n::message("error.clipSourceMissing")),
+                }
             }
         }
         ensure!(

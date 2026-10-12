@@ -133,11 +133,12 @@ impl AudioSession {
             .clips
             .push(Clip {
                 id: id(),
-                asset_id: asset.id.clone(),
+                asset_id: Some(asset.id.clone()),
                 name,
                 start: recording.start,
                 offset: 0.,
                 duration: asset.duration,
+                script: None,
             });
         project.assets.push(asset);
         store.replace(project)

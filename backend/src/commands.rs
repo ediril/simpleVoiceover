@@ -124,11 +124,12 @@ pub fn import_source(
             .fold(position, f64::max);
         track.clips.push(Clip {
             id: id(),
-            asset_id,
+            asset_id: Some(asset_id),
             name,
             start,
             offset: 0.,
             duration: asset.duration,
+            script: None,
         });
         project.assets.push(asset);
         for (stream_index, audio) in assets.enumerate() {
@@ -140,11 +141,12 @@ pub fn import_source(
             track.mute = stream_index > 0;
             track.clips.push(Clip {
                 id: id(),
-                asset_id: audio.id.clone(),
+                asset_id: Some(audio.id.clone()),
                 name: audio.name.clone(),
                 start,
                 offset: 0.,
                 duration: audio.duration,
+                script: None,
             });
             project.tracks.insert(index + stream_index + 1, track);
             project.assets.push(audio);
