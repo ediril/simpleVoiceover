@@ -189,7 +189,11 @@ export function useTransport({
   const previewPlaying = playing && !seekPending
   useEffect(() => {
     const video = videoRef.current
-    if (!video || !videoClip) return
+    if (!video) return
+    if (!videoClip) {
+      video.pause()
+      return
+    }
     const desired = previewPosition - videoClip.start + videoClip.offset
     synchronizeVideo(video, desired, previewPlaying, showError, seekRevision)
   }, [previewPosition, previewPlaying, videoClip, showError, seekRevision])

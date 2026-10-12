@@ -45,6 +45,17 @@ export default function VideoPreview({
 }: Props) {
   const dragOrigin = useRef<{ x: number; y: number } | null>(null)
   const { fullscreen, toggleFullscreen } = usePreviewFullscreen(showError)
+  const showingVideo = !!videoAsset && !!videoClip
+  const synchronizeToClip = (video: HTMLVideoElement) => {
+    if (videoClip)
+      synchronizeVideo(
+        video,
+        previewPosition - videoClip.start + videoClip.offset,
+        previewPlaying,
+        showError,
+        seekRevision,
+      )
+  }
   return (
     <section className={`preview-panel ${fullscreen ? 'is-fullscreen' : ''}`}>
       <div
@@ -84,34 +95,17 @@ export default function VideoPreview({
         }}
       >
         <OperationProgress busy={busy} progress={progress} />
-        {videoAsset && videoClip ? (
-          <video
-            key={videoAsset.id}
-            ref={videoRef}
-            src={videoAsset.url}
-            muted
-            playsInline
-            onError={() => showError(new Error(t('error.videoCodec')))}
-            onLoadedData={(event) =>
-              synchronizeVideo(
-                event.currentTarget,
-                previewPosition - videoClip.start + videoClip.offset,
-                previewPlaying,
-                showError,
-                seekRevision,
-              )
-            }
-            onSeeked={(event) =>
-              synchronizeVideo(
-                event.currentTarget,
-                previewPosition - videoClip.start + videoClip.offset,
-                previewPlaying,
-                showError,
-                seekRevision,
-              )
-            }
-          />
-        ) : (
+        <video
+          ref={videoRef}
+          src={showingVideo ? videoAsset.url : undefined}
+          hidden={!showingVideo}
+          muted
+          playsInline
+          onError={() => showError(new Error(t('error.videoCodec')))}
+          onLoadedData={(event) => synchronizeToClip(event.currentTarget)}
+          onSeeked={(event) => synchronizeToClip(event.currentTarget)}
+        />
+        {showingVideo ? null : (
           <div className="preview-empty">
             <div className="preview-glyph">
               <span />

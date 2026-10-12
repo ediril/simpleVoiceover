@@ -1,4 +1,5 @@
 interface PlaybackState {
+  source: string
   playing: boolean
   pending: boolean
   playRequest: number
@@ -83,8 +84,9 @@ export function synchronizeVideo(
     playing = false
   desired = previewTime(video, desired)
   let state = states.get(video)
-  if (!state) {
+  if (!state || state.source !== video.src) {
     state = {
+      source: video.src,
       playing: false,
       pending: false,
       playRequest: 0,

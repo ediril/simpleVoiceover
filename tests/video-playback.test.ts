@@ -285,6 +285,26 @@ describe('video preview synchronization', () => {
   })
 })
 
+describe('video source changes', () => {
+  it('retries playback with fresh state after the source changes', async () => {
+    const { video, showError } = preview()
+    Object.assign(video, {
+      src: 'http://127.0.0.1:5174/preview/first',
+      play: vi.fn().mockRejectedValue(new DOMException('blocked', 'NotAllowedError')),
+    })
+    synchronizeVideo(video, 0, true, showError)
+    await vi.waitFor(() => expect(showError).toHaveBeenCalledTimes(1))
+    synchronizeVideo(video, 0, true, showError)
+    expect(video.play).toHaveBeenCalledTimes(1)
+    Object.assign(video, {
+      src: 'http://127.0.0.1:5174/preview/second',
+      play: vi.fn().mockResolvedValue(undefined),
+    })
+    synchronizeVideo(video, 0, true, showError)
+    expect(video.play).toHaveBeenCalledTimes(1)
+  })
+})
+
 describe('video playback unlock', () => {
   it('starts and pauses a paused video once so later playback is permitted', () => {
     const { video } = preview()
