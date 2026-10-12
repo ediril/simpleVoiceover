@@ -11,7 +11,7 @@
 [![Languages](https://img.shields.io/badge/languages-13-d8f593?style=flat-square&labelColor=222628)](#features)
 [![License](https://img.shields.io/badge/license-MIT-d8f593?style=flat-square&labelColor=222628)](LICENSE)
 
-**[Download](#download)** · **[Features](#features)** · **[Under the hood](#under-the-hood)** · **[Build](#build-from-source)** · **[Manual](docs/MANUAL.md)** · **[YouTube](https://www.youtube.com/@arco9-lab)**
+**[Download](#download)** · **[Features](#features)** · **[AI voiceover](#ai-voiceover)** · **[Under the hood](#under-the-hood)** · **[Build](#build-from-source)** · **[Manual](docs/MANUAL.md)** · **[YouTube](https://www.youtube.com/@arco9-lab)**
 
 <br>
 
@@ -211,6 +211,42 @@ Source files up to 100 GB are streamed from disk with 64-bit offsets. Import cop
 </td>
 </tr>
 </table>
+
+## AI voiceover
+
+simpleVoiceover can turn a script into speech with [Kokoro](https://huggingface.co/hexgrad/Kokoro-82M), an open-source voice model that runs on your own computer. Your script stays on your machine and generation is free. The app talks to [Kokoro-FastAPI](https://github.com/remsky/Kokoro-FastAPI), a local server that you start once with Docker. Kokoro's voices speak English and a few other languages; the interface language does not change the voice.
+
+### Set up Kokoro
+
+1. Install and start Docker: [Docker Desktop](https://www.docker.com/products/docker-desktop/) or [Rancher Desktop](https://rancherdesktop.io/) on Windows and macOS, or Docker Engine on Linux.
+2. Start Kokoro:
+
+   ```bash
+   docker run -d --name kokoro -p 8880:8880 --restart unless-stopped ghcr.io/remsky/kokoro-fastapi-cpu:v0.9.0
+   ```
+
+   The first run downloads about 1.5 GB. Kokoro then starts automatically whenever Docker starts.
+
+3. Open <http://localhost:8880/web> in a browser. Kokoro's test page confirms that the server is running.
+
+With an NVIDIA graphics card, use `ghcr.io/remsky/kokoro-fastapi-gpu:v0.9.0` and add `--gpus all` for faster generation.
+
+If the app shows **Kokoro isn't ready**, Docker or the Kokoro container is not running. Start Docker, then run `docker start kokoro`.
+
+### Write and generate a voiceover
+
+1. Select the **Script** tool in the timeline toolbar.
+2. Drag across an audio track to create a script clip. The width of the clip is the time the speech may take.
+3. Double-click the clip, type the text and press **Enter**. The clip shows its progress while it generates in the background. Press **Escape** to discard the edit.
+4. Write more clips while earlier ones generate. Playback is available again when the queue is empty. To cancel, select **Stop** in the **Script** tab.
+
+Kokoro speaks at its natural pace. If the speech is longer than the clip, playback stops at the end of the clip and the rest appears as a faded overflow labeled with its length. Drag the right edge of the clip to make room, or double-click the overflow to fit the clip to the speech. Editing the text or changing the voice marks a clip as out of date until you generate it again.
+
+### Choose a voice and server
+
+Select the project voice in the **Script** tab. New projects use the default voice from **Settings**, where you can also change the Kokoro address (default `http://localhost:8880`). Voices that start with `af_` and `am_` are American English, `bf_` and `bm_` are British English.
+
+Projects that contain script clips do not open in versions of simpleVoiceover without AI voiceover.
 
 ## A look around
 

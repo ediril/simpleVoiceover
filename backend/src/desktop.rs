@@ -1,6 +1,11 @@
-use crate::{commands, controller, progress::Progress, state::StudioState};
+use crate::{
+    commands, controller,
+    generator::{GenerationState, Job},
+    progress::Progress,
+    state::StudioState,
+};
 use anyhow::Result;
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
@@ -45,6 +50,9 @@ async fn studio_command(
         }
         return Ok(serde_json::json!({}));
     }
+    if let Some(response) = speech_command(&state.studio, &request).await {
+        return response;
+    }
     let studio = state.studio.clone();
     let progress_app = app.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
@@ -69,6 +77,74 @@ async fn studio_command(
     let (result, snapshot) = result;
     let _ = app.emit("studio-snapshot", snapshot);
     result.map_err(|e| e.to_string())
+}
+
+const SPEECH_HELP: &str = "https://github.com/ediril/simpleVoiceover#ai-voiceover";
+const SPEECH_COMMANDS: [&str; 4] = [
+    "script_generate",
+    "script_cancel",
+    "speech_voices",
+    "speech_help",
+];
+
+async fn speech_command(
+    studio: &StudioState,
+    request: &Value,
+) -> Option<std::result::Result<Value, String>> {
+    if !SPEECH_COMMANDS.contains(&request["command"].as_str()?) {
+        return None;
+    }
+    let studio = studio.clone();
+    let request = request.clone();
+    Some(
+        tauri::async_runtime::spawn_blocking(move || speech_request(&studio, &request))
+            .await
+            .map_err(|error| error.to_string())
+            .and_then(|result| result.map_err(|error| error.to_string())),
+    )
+}
+
+fn speech_request(studio: &StudioState, request: &Value) -> Result<Value> {
+    match request["command"].as_str().unwrap_or_default() {
+        "script_cancel" => studio.generator.cancel(),
+        "speech_help" => open_in_browser(SPEECH_HELP)?,
+        command => {
+            let url = studio
+                .store
+                .lock()
+                .map_err(|_| anyhow::anyhow!(crate::i18n::message("error.storeUnavailable")))?
+                .config
+                .speech_url
+                .clone();
+            let voices = crate::speech::voices(&url)?;
+            if command == "speech_voices" {
+                return Ok(json!({ "voices": voices }));
+            }
+            let jobs = request["clips"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|clip| {
+                    Some(Job {
+                        track_id: clip["trackId"].as_str()?.into(),
+                        clip_id: clip["clipId"].as_str()?.into(),
+                    })
+                });
+            studio.generator.enqueue(jobs);
+        }
+    }
+    Ok(json!({}))
+}
+
+fn open_in_browser(url: &str) -> Result<()> {
+    #[cfg(target_os = "macos")]
+    let mut command = std::process::Command::new("open");
+    #[cfg(target_os = "windows")]
+    let mut command = std::process::Command::new("explorer");
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let mut command = std::process::Command::new("xdg-open");
+    command.arg(url).spawn()?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -154,6 +230,17 @@ pub fn run(studio: StudioState, address: &str) -> Result<()> {
                 }
             })?;
             let handle = window.app_handle().clone();
+            let generation_handle = handle.clone();
+            let generation_store = studio.store.clone();
+            studio.generator.set_sink(move |event| {
+                let _ = generation_handle.emit("studio-generation", &event);
+                if event.state == GenerationState::Done {
+                    if let Ok(store) = generation_store.lock() {
+                        let _ =
+                            generation_handle.emit("studio-snapshot", commands::snapshot(&store));
+                    }
+                }
+            });
             let close = studio.close_requested.clone();
             tauri::async_runtime::spawn(async move {
                 loop {

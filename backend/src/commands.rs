@@ -27,33 +27,45 @@ pub(crate) fn number(value: &Value, key: &str) -> Result<f64> {
     Ok(n)
 }
 
-pub fn import_source(
-    store: &mut Store,
-    source: PathBuf,
-    name: String,
-    kind: String,
-    target: Option<String>,
-    position: f64,
-) -> Result<()> {
-    let size = fs::metadata(&source)?.len();
+pub struct Decoded {
+    pub assets: Vec<Asset>,
+    was_dirty: bool,
+    had_root: bool,
+}
+
+impl Decoded {
+    pub fn discard(&self, store: &mut Store) -> Result<()> {
+        for asset in &self.assets {
+            let _ = fs::remove_file(store.source(&asset.id));
+            let _ = fs::remove_file(store.pcm(&asset.id));
+        }
+        if !self.was_dirty {
+            store.config.dirty = false;
+            store.persist()?;
+            if !self.had_root {
+                let _ = fs::remove_dir_all(store.root());
+            }
+        }
+        Ok(())
+    }
+}
+
+pub fn decode_source(store: &mut Store, source: &Path, name: &str, kind: &str) -> Result<Decoded> {
+    let size = fs::metadata(source)?.len();
     ensure!(size <= MAX_UPLOAD, crate::i18n::message("error.fileLimit"));
-    ensure!(
-        position.is_finite() && position >= 0.,
-        crate::i18n::message("error.position")
-    );
     let was_dirty = store.config.dirty;
     let had_root = store.root().exists();
     store.begin_changes()?;
     let asset_id = id();
     let owned = store.source(&asset_id);
     let decoded = media::import(
-        &source,
+        source,
         &owned,
         &store.pcm(&asset_id),
         Asset {
             id: asset_id.clone(),
-            name: name.clone(),
-            kind: kind.clone(),
+            name: name.into(),
+            kind: kind.into(),
             size,
             duration: 0.,
             frames: 0,
@@ -63,8 +75,12 @@ pub fn import_source(
         },
         &store.progress,
     );
-    let assets = match decoded {
-        Ok(assets) => assets,
+    match decoded {
+        Ok(assets) => Ok(Decoded {
+            assets,
+            was_dirty,
+            had_root,
+        }),
         Err(error) => {
             let _ = fs::remove_file(&owned);
             let _ = fs::remove_file(store.pcm(&asset_id));
@@ -75,10 +91,25 @@ pub fn import_source(
                     let _ = fs::remove_dir_all(store.root());
                 }
             }
-            return Err(error);
+            Err(error)
         }
-    };
-    let imported_ids: Vec<_> = assets.iter().map(|asset| asset.id.clone()).collect();
+    }
+}
+
+pub fn import_source(
+    store: &mut Store,
+    source: PathBuf,
+    name: String,
+    kind: String,
+    target: Option<String>,
+    position: f64,
+) -> Result<()> {
+    ensure!(
+        position.is_finite() && position >= 0.,
+        crate::i18n::message("error.position")
+    );
+    let decoded = decode_source(store, &source, &name, &kind)?;
+    let assets = decoded.assets.clone();
     let result = (|| {
         let mut assets = assets.into_iter();
         let asset = assets
@@ -124,7 +155,7 @@ pub fn import_source(
             .fold(position, f64::max);
         track.clips.push(Clip {
             id: id(),
-            asset_id: Some(asset_id),
+            asset_id: Some(asset.id.clone()),
             name,
             start,
             offset: 0.,
@@ -155,17 +186,7 @@ pub fn import_source(
         Ok::<_, anyhow::Error>(project)
     })();
     if result.is_err() {
-        for asset_id in imported_ids {
-            let _ = fs::remove_file(store.source(&asset_id));
-            let _ = fs::remove_file(store.pcm(&asset_id));
-        }
-        if !was_dirty {
-            store.config.dirty = false;
-            store.persist()?;
-            if !had_root {
-                let _ = fs::remove_dir_all(store.root());
-            }
-        }
+        decoded.discard(store)?;
     }
     store.replace(result?)
 }
@@ -177,6 +198,9 @@ pub fn execute(store: &mut Store, value: &Value) -> Result<Value> {
         "snapshot" => {}
         "preferences_patch" => {
             store.set_language(text(value, "preference")?)?;
+        }
+        "speech_preferences_patch" => {
+            store.set_speech(text(value, "url")?, text(value, "voice")?)?;
         }
         "audio_preferences_patch" => {
             store.set_audio_devices(text(value, "inputDevice")?, text(value, "outputDevice")?)?;

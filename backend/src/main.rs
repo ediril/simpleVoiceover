@@ -12,6 +12,9 @@ mod desktop;
 mod dsp;
 mod editing;
 mod filesystem;
+mod generator;
+#[cfg(test)]
+mod generator_tests;
 mod i18n;
 mod import_reader;
 mod indexed_archive;
@@ -43,6 +46,7 @@ mod server;
 #[cfg(test)]
 mod server_tests;
 mod session;
+mod speech;
 mod state;
 mod storage;
 #[cfg(test)]
