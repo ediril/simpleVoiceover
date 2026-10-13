@@ -8,8 +8,41 @@ $waitSeconds = if ($env:KOKORO_WAIT_SECONDS) { $env:KOKORO_WAIT_SECONDS } else {
 $kokoroUrl = "http://localhost:$port"
 $scriptCommand = 'powershell -ExecutionPolicy Bypass -File scripts\kokoro.ps1'
 
-function Stop-WithMessage([string]$Message, [int]$ExitCode = 1) {
-    Write-Host $Message
+$interactive = -not [Console]::IsOutputRedirected
+$useColor = $interactive -and -not $env:NO_COLOR
+$okSymbol = [string][char]0x2713
+$failSymbol = [string][char]0x2717
+$arrow = [string][char]0x2192
+$separator = [string][char]0x00B7
+$ellipsis = [string][char]0x2026
+
+function Write-Part([string]$Text, [string]$Color = '') {
+    if ($useColor -and $Color) {
+        Write-Host -NoNewline $Text -ForegroundColor $Color
+    } else {
+        Write-Host -NoNewline $Text
+    }
+}
+
+function Write-Report([string]$Symbol, [string]$Color, [string]$Text, [string]$Detail = '', [string]$Fix = '') {
+    Write-Part $Symbol $Color
+    Write-Part " $Text"
+    if ($Detail) { Write-Part " $separator $Detail" 'DarkGray' }
+    if ($Fix) { Write-Part " $arrow $Fix" }
+    Write-Host ''
+}
+
+function Write-Good([string]$Text, [string]$Detail = '') { Write-Report $okSymbol 'Green' $Text $Detail }
+function Write-Caution([string]$Text, [string]$Fix) { Write-Report '!' 'Yellow' $Text '' $Fix }
+function Write-Problem([string]$Text, [string]$Fix = '') { Write-Report $failSymbol 'Red' $Text '' $Fix }
+
+function Write-Muted([string]$Text) {
+    Write-Part $Text 'DarkGray'
+    Write-Host ''
+}
+
+function Stop-WithError([string]$Text, [string]$Fix = '', [int]$ExitCode = 1) {
+    Write-Problem $Text $Fix
     exit $ExitCode
 }
 
@@ -44,51 +77,60 @@ function Get-PublishedAddresses {
 }
 
 function Assert-Settings {
-    if ($port -notmatch '^\d+$') { Stop-WithMessage "KOKORO_PORT must be a number, not `"$port`"." }
-    if ($waitSeconds -notmatch '^\d+$') { Stop-WithMessage "KOKORO_WAIT_SECONDS must be a number, not `"$waitSeconds`"." }
+    if ($port -notmatch '^\d+$') { Stop-WithError "KOKORO_PORT must be a number, not `"$port`"" }
+    if ($waitSeconds -notmatch '^\d+$') { Stop-WithError "KOKORO_WAIT_SECONDS must be a number, not `"$waitSeconds`"" }
 }
 
 function Assert-DockerReady {
-    if (-not (Test-DockerInstalled)) {
-        Stop-WithMessage 'Docker is not installed. Install Docker Desktop (https://www.docker.com/products/docker-desktop/) or Rancher Desktop (https://rancherdesktop.io/), then run this again.'
-    }
-    if (-not (Test-DockerRunning)) {
-        Stop-WithMessage 'Docker is installed but not running. Start Docker Desktop or Rancher Desktop, then run this again.'
-    }
+    if (-not (Test-DockerInstalled)) { Stop-WithError "Docker isn't installed" 'install Docker Desktop or Rancher Desktop' }
+    if (-not (Test-DockerRunning)) { Stop-WithError "Docker isn't running" 'start Docker Desktop or Rancher Desktop' }
 }
 
 function New-KokoroContainer {
     $runOptions = @('run', '-d', '--name', $container, '-p', "127.0.0.1:${port}:8880", '--restart', 'unless-stopped')
     if ($image -like '*-gpu*') { $runOptions += @('--gpus', 'all') }
-    if (Test-ImageDownloaded) {
-        Write-Host "Creating the Kokoro container `"$container`"."
-    } else {
-        Write-Host 'Setting up Kokoro for the first time. This downloads about 1.5 GB and can take several minutes.'
+    if (-not (Test-ImageDownloaded)) {
+        Write-Part 'Downloading Kokoro '
+        Write-Part '(about 1.5 GB, first time only)' 'DarkGray'
+        Write-Host $ellipsis
     }
     docker @runOptions $image | Out-Null
-    if ($LASTEXITCODE -ne 0) { Stop-WithMessage 'Docker could not create the Kokoro container. See the message above.' }
+    if ($LASTEXITCODE -ne 0) { Stop-WithError "Docker couldn't create the Kokoro container" "see Docker's message above" }
+}
+
+function Show-Waiting([int]$Elapsed) {
+    if ($interactive) {
+        Write-Part "`r$(' ' * 30)`rStarting Kokoro "
+        Write-Part "$separator ${Elapsed}s" 'DarkGray'
+    } else {
+        Write-Part '.'
+    }
+}
+
+function Complete-Waiting {
+    if ($interactive) { Write-Part "`r$(' ' * 30)`r" } else { Write-Host '' }
 }
 
 function Wait-UntilReady {
-    $deadline = (Get-Date).AddSeconds([int]$waitSeconds)
+    $started = Get-Date
+    $deadline = $started.AddSeconds([int]$waitSeconds)
     if (-not (Get-Voices)) {
-        Write-Host -NoNewline 'Waiting for Kokoro to answer'
+        Write-Part 'Starting Kokoro'
         while (-not (Get-Voices)) {
             if ((Get-ContainerState) -in @('exited', 'dead', 'restarting')) {
-                Write-Host ''
-                Stop-WithMessage "Kokoro stopped unexpectedly while starting. See what went wrong with: docker logs $container"
+                Complete-Waiting
+                Stop-WithError 'Kokoro stopped while starting' "docker logs $container"
             }
             if ((Get-Date) -ge $deadline) {
-                Write-Host ''
-                Write-Host "Kokoro did not answer at $kokoroUrl within $waitSeconds seconds. Check the setup with: $scriptCommand status"
-                Stop-WithMessage "See what Kokoro reports with: docker logs $container"
+                Complete-Waiting
+                Stop-WithError "Kokoro didn't answer at $kokoroUrl within ${waitSeconds}s" "docker logs $container"
             }
-            Write-Host -NoNewline '.'
+            Show-Waiting ([int]((Get-Date) - $started).TotalSeconds)
             Start-Sleep -Seconds 2
         }
-        Write-Host ''
+        Complete-Waiting
     }
-    Write-Host "Kokoro is ready at $kokoroUrl"
+    Write-Good 'Kokoro ready' $kokoroUrl
 }
 
 function Start-Kokoro {
@@ -96,35 +138,32 @@ function Start-Kokoro {
     $state = Get-ContainerState
     if (-not $state) {
         New-KokoroContainer
-    } elseif ($state -eq 'running') {
-        Write-Host 'Kokoro is already running.'
-    } else {
-        Write-Host 'Starting Kokoro.'
+    } elseif ($state -ne 'running') {
         docker start $container | Out-Null
-        if ($LASTEXITCODE -ne 0) { Stop-WithMessage 'Docker could not start Kokoro. See the message above.' }
+        if ($LASTEXITCODE -ne 0) { Stop-WithError "Docker couldn't start Kokoro" "see Docker's message above" }
     }
     Wait-UntilReady
 }
 
 function Stop-Kokoro {
-    if (-not (Test-DockerInstalled)) { Write-Host 'Docker is not installed, so Kokoro is not running.'; return }
-    if (-not (Test-DockerRunning)) { Write-Host 'Docker is not running, so Kokoro is not running either.'; return }
+    if (-not (Test-DockerInstalled)) { Write-Muted "Nothing to stop $separator Docker isn't installed"; return }
+    if (-not (Test-DockerRunning)) { Write-Muted "Nothing to stop $separator Docker isn't running"; return }
     $state = Get-ContainerState
     if (-not $state) {
-        Write-Host "There is no Kokoro container named `"$container`". Nothing to stop."
+        Write-Muted "Nothing to stop $separator no Kokoro container"
     } elseif ($state -in @('running', 'restarting', 'paused')) {
         docker stop $container | Out-Null
-        if ($LASTEXITCODE -ne 0) { Stop-WithMessage 'Docker could not stop Kokoro. See the message above.' }
-        Write-Host "Kokoro stopped. It stays stopped until you run: $scriptCommand start"
+        if ($LASTEXITCODE -ne 0) { Stop-WithError "Docker couldn't stop Kokoro" "see Docker's message above" }
+        Write-Good 'Kokoro stopped' "stays off until $scriptCommand start"
     } else {
-        Write-Host 'Kokoro is already stopped.'
+        Write-Good 'Kokoro already stopped'
     }
 }
 
 function Show-Network {
     $addresses = @(Get-PublishedAddresses)
     if ($addresses.Count -eq 0) {
-        Write-Host "Network: Kokoro's port is not published, so the app cannot reach it. Fix it with: $scriptCommand reset"
+        Write-Caution "Kokoro's port isn't published" "$scriptCommand reset"
         return
     }
     $localOnly = $true
@@ -135,105 +174,89 @@ function Show-Network {
             $localOnly = $false
         }
     }
-    if ($localOnly) {
-        Write-Host 'Network: only this computer can reach Kokoro.'
-    } else {
-        Write-Host "Network: warning, Kokoro listens on all network interfaces, so other computers on your network can reach it. Limit it to this computer with: $scriptCommand reset"
+    if (-not $localOnly) {
+        Write-Caution 'Reachable from your network' "$scriptCommand reset"
     }
     if ($publishedPorts -notcontains $port) {
-        Write-Host "Port: Kokoro is published on port $($publishedPorts -join ' '), but this script checks port $port. Set KOKORO_PORT or run: $scriptCommand reset"
+        Write-Caution "Kokoro uses port $($publishedPorts -join ' '), not $port" "$scriptCommand reset"
     }
 }
 
-function Show-DockerAndContainer {
+function Test-KokoroLayers {
     if (-not (Test-DockerInstalled)) {
-        Write-Host 'Docker: not installed. Install Docker Desktop (https://www.docker.com/products/docker-desktop/) or Rancher Desktop (https://rancherdesktop.io/).'
-        return
+        Write-Problem "Docker isn't installed" 'install Docker Desktop or Rancher Desktop'
+        return $false
     }
-    Write-Host 'Docker: installed.'
     if (-not (Test-DockerRunning)) {
-        Write-Host 'Docker: not running. Start Docker Desktop or Rancher Desktop.'
-        return
+        Write-Problem "Docker isn't running" 'start Docker Desktop or Rancher Desktop'
+        return $false
     }
-    Write-Host 'Docker: running.'
+    Write-Good 'Docker running'
     $state = Get-ContainerState
     if (-not $state) {
-        Write-Host "Container: there is no Kokoro container named `"$container`". Create it with: $scriptCommand start"
-        return
+        Write-Problem 'No Kokoro container' "$scriptCommand start"
+        return $false
     }
-    if ($state -eq 'running') {
-        Write-Host "Container: `"$container`" exists and is running."
-    } else {
-        Write-Host "Container: `"$container`" exists but is stopped. Start it with: $scriptCommand start"
+    if ($state -ne 'running') {
+        Write-Problem 'Kokoro stopped' "$scriptCommand start"
+        return $false
     }
-    Show-Network
+    return $true
 }
 
 function Show-Status {
-    Show-DockerAndContainer
     $voices = Get-Voices
-    if (-not $voices) { Stop-WithMessage "Kokoro: not answering at $kokoroUrl." }
-    Write-Host "Kokoro: answering at $kokoroUrl with $(@($voices.voices).Count) voices."
+    $layersReady = Test-KokoroLayers
+    if ($voices) {
+        Write-Good 'Kokoro running' "$(@($voices.voices).Count) voices $separator $kokoroUrl"
+    } elseif ($layersReady) {
+        Write-Problem "Kokoro isn't answering at $kokoroUrl" "$scriptCommand start"
+    }
+    if ($layersReady) { Show-Network }
+    if (-not $voices) { exit 1 }
 }
 
-function Confirm-Change {
-    $answer = Read-Host 'Continue? [y/N]'
-    if ($answer -notmatch '^(y|yes)$') { Stop-WithMessage 'Nothing changed.' }
+function Confirm-Change([string]$Question) {
+    $answer = Read-Host "$Question [y/N]"
+    if ($answer -notmatch '^(y|yes)$') {
+        Write-Muted 'Nothing changed'
+        exit 1
+    }
 }
 
 function Remove-KokoroContainer {
     if (-not (Get-ContainerState)) { return }
     docker rm -f $container | Out-Null
-    if ($LASTEXITCODE -ne 0) { Stop-WithMessage 'Docker could not remove the Kokoro container. See the message above.' }
-    Write-Host "Removed the Kokoro container `"$container`"."
+    if ($LASTEXITCODE -ne 0) { Stop-WithError "Docker couldn't remove the Kokoro container" "see Docker's message above" }
 }
 
 function Remove-KokoroImage {
     if (-not (Test-ImageDownloaded)) { return }
     docker image rm $image | Out-Null
-    if ($LASTEXITCODE -ne 0) { Stop-WithMessage "Docker could not remove the image $image. See the message above." }
-    Write-Host "Removed the Kokoro image $image."
+    if ($LASTEXITCODE -ne 0) { Stop-WithError "Docker couldn't remove $image" "see Docker's message above" }
 }
 
 function Reset-Kokoro {
     if ($option -and $option -notin @('--yes', '-yes')) {
-        Write-Host "Unknown option: $option"
-        Stop-WithMessage "Use: $scriptCommand reset [--yes]" 2
+        Stop-WithError "Unknown option $option" "$scriptCommand reset [--yes]" 2
     }
     Assert-DockerReady
-    Write-Host "Reset removes the Kokoro container `"$container`" and creates it again, reachable only from this computer on port $port."
-    if (Test-ImageDownloaded) {
-        Write-Host 'The downloaded Kokoro image is kept, so nothing is downloaded again.'
-    } else {
-        Write-Host "The image $image is not downloaded yet, so Kokoro downloads it first."
+    if (-not $option) {
+        if (Test-ImageDownloaded) {
+            Confirm-Change 'Recreate the Kokoro container? The download is kept.'
+        } else {
+            Confirm-Change 'Recreate the Kokoro container? It downloads about 1.5 GB first.'
+        }
     }
-    if (-not $option) { Confirm-Change }
     Remove-KokoroContainer
     Start-Kokoro
 }
 
-function Show-Removal([bool]$IncludeImage) {
-    if (-not (Get-ContainerState)) {
-        Write-Host "There is no Kokoro container named `"$container`"."
-    } elseif ($IncludeImage) {
-        Write-Host "This removes the Kokoro container `"$container`"."
-    } elseif (Test-ImageDownloaded) {
-        Write-Host "This removes the Kokoro container `"$container`". The next start creates it again without downloading."
-        Write-Host "The downloaded Kokoro image is kept. To remove it too, run: $scriptCommand remove --all"
-    } else {
-        Write-Host "This removes the Kokoro container `"$container`". The image $image is not downloaded, so the next start downloads it first."
-    }
-    if (-not $IncludeImage) { return }
-    if (Test-ImageDownloaded) {
-        Write-Host "This removes the downloaded Kokoro image $image to free about 1.5 GB. The next start downloads it again."
-    } else {
-        Write-Host "The Kokoro image $image is not downloaded, so there is no image to remove."
-    }
-}
-
-function Test-SomethingToRemove([bool]$IncludeImage) {
-    if (Get-ContainerState) { return $true }
-    return $IncludeImage -and (Test-ImageDownloaded)
+function Get-RemovalQuestion([bool]$HasContainer, [bool]$HasImage, [bool]$IncludeImage) {
+    if ($HasContainer -and $HasImage -and $IncludeImage) { return 'Remove the Kokoro container and the download (about 1.5 GB)?' }
+    if ($HasContainer -and $HasImage) { return 'Remove the Kokoro container? The download is kept.' }
+    if ($HasContainer) { return 'Remove the Kokoro container?' }
+    return 'Remove the Kokoro download (about 1.5 GB)?'
 }
 
 function Remove-Kokoro {
@@ -245,42 +268,50 @@ function Remove-Kokoro {
         } elseif ($removeOption -in @('--yes', '-yes')) {
             $confirmed = $true
         } else {
-            Write-Host "Unknown option: $removeOption"
-            Stop-WithMessage "Use: $scriptCommand remove [--all] [--yes]" 2
+            Stop-WithError "Unknown option $removeOption" "$scriptCommand remove [--all] [--yes]" 2
         }
     }
-    if (-not (Test-DockerInstalled)) { Write-Host 'Docker is not installed, so there is no Kokoro container or image to remove.'; return }
-    if (-not (Test-DockerRunning)) { Stop-WithMessage 'Docker is not running, so nothing was removed. Start Docker Desktop or Rancher Desktop, then run this again.' }
-    Show-Removal $includeImage
-    if (-not (Test-SomethingToRemove $includeImage)) {
-        Write-Host 'Nothing to remove.'
+    if (-not (Test-DockerInstalled)) { Write-Muted "Nothing to remove $separator Docker isn't installed"; return }
+    if (-not (Test-DockerRunning)) { Stop-WithError "Docker isn't running" 'start Docker Desktop or Rancher Desktop' }
+    $hasContainer = [bool](Get-ContainerState)
+    $hasImage = [bool](Test-ImageDownloaded)
+    if (-not $hasContainer -and -not $includeImage) {
+        Write-Muted "Nothing to remove $separator no Kokoro container"
         return
     }
-    if (-not $confirmed) { Confirm-Change }
+    if (-not $hasContainer -and -not $hasImage) {
+        Write-Muted "Nothing to remove $separator no Kokoro container or download"
+        return
+    }
+    if (-not $confirmed) { Confirm-Change (Get-RemovalQuestion $hasContainer $hasImage $includeImage) }
     Remove-KokoroContainer
     if ($includeImage) { Remove-KokoroImage }
+    Write-Good 'Removed'
+}
+
+function Show-Setting([string]$Name, [string]$Description, [string]$Default) {
+    Write-Part ('  {0,-21} {1} ' -f $Name, $Description)
+    Write-Part "($Default)" 'DarkGray'
+    Write-Host ''
 }
 
 function Show-Help {
     Write-Host @"
-$scriptCommand <start|stop|status|reset|remove|help>
-
 Runs Kokoro, the local voice server for AI voiceover, in Docker.
-  start                 Create or start Kokoro and wait until it answers
+Usage: $scriptCommand <command>
+  start                 Start Kokoro and wait until it answers
   stop                  Stop Kokoro; it stays installed
-  status                Show whether Docker and Kokoro are running
-  reset [--yes]         Remove and recreate the Kokoro container; no new download
-  remove [--yes]        Remove the Kokoro container; the downloaded image stays
-  remove --all [--yes]  Also remove the downloaded image (about 1.5 GB) to uninstall Kokoro
+  status                Check Docker and Kokoro
+  reset [--yes]         Recreate the container; the download is kept
+  remove [--yes]        Remove the container; the download is kept
+  remove --all [--yes]  Also remove the download (about 1.5 GB)
   help                  Show this help
-
-Settings (environment variables):
-  KOKORO_CONTAINER     Container name (default kokoro)
-  KOKORO_PORT          Port on this computer (default 8880)
-  KOKORO_IMAGE         Docker image (default ghcr.io/remsky/kokoro-fastapi-cpu:v0.9.0)
-                       An image with -gpu in its name also gets --gpus all
-  KOKORO_WAIT_SECONDS  How long start waits for Kokoro (default 180)
+Environment:
 "@
+    Show-Setting 'KOKORO_CONTAINER' 'Container name' 'kokoro'
+    Show-Setting 'KOKORO_PORT' 'Port on this computer' '8880'
+    Show-Setting 'KOKORO_IMAGE' 'Docker image; -gpu in the name adds --gpus all' 'ghcr.io/remsky/kokoro-fastapi-cpu:v0.9.0'
+    Show-Setting 'KOKORO_WAIT_SECONDS' 'Seconds start waits for Kokoro' '180'
 }
 
 Assert-Settings
@@ -291,9 +322,6 @@ switch ($command) {
     'reset' { Reset-Kokoro }
     'remove' { Remove-Kokoro }
     'help' { Show-Help }
-    default {
-        Write-Host "Unknown command: $command"
-        Stop-WithMessage "Use: $scriptCommand help" 2
-    }
+    default { Stop-WithError "Unknown command $command" "$scriptCommand help" 2 }
 }
 exit 0

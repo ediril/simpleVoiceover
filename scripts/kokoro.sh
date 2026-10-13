@@ -6,8 +6,36 @@ image="${KOKORO_IMAGE:-ghcr.io/remsky/kokoro-fastapi-cpu:v0.9.0}"
 wait_seconds="${KOKORO_WAIT_SECONDS:-180}"
 kokoro_url="http://localhost:$port"
 
-say() { printf '%s\n' "$*"; }
-fail() { printf '%s\n' "$*" >&2; exit 1; }
+is_terminal() { [[ -t "$1" && "${TERM:-}" != dumb ]]; }
+
+paint() {
+  local stream="$1" style="$2" text="$3"
+  if is_terminal "$stream" && [[ -z "${NO_COLOR:-}" ]]; then
+    printf '\033[%sm%s\033[0m' "$style" "$text"
+  else
+    printf '%s' "$text"
+  fi
+}
+
+report() {
+  local stream="$1" style="$2" symbol="$3" text="$4" detail="${5:-}" fix="${6:-}"
+  {
+    paint "$stream" "$style" "$symbol"
+    printf ' %s' "$text"
+    if [[ -n "$detail" ]]; then paint "$stream" 2 " · $detail"; fi
+    if [[ -n "$fix" ]]; then printf ' → %s' "$fix"; fi
+    printf '\n'
+  } >&"$stream"
+}
+
+ok() { report 1 32 ✓ "$1" "${2:-}"; }
+warn() { report 1 33 ! "$1" "" "$2"; }
+problem() { report 1 31 ✗ "$1" "" "$2"; }
+fail() { report 2 31 ✗ "$1" "" "${2:-}"; exit "${3:-1}"; }
+muted() {
+  local stream="${2:-1}"
+  { paint "$stream" 2 "$1"; printf '\n'; } >&"$stream"
+}
 
 docker_installed() { command -v docker >/dev/null 2>&1; }
 docker_running() { docker info >/dev/null 2>&1; }
@@ -20,71 +48,83 @@ published_addresses() {
 }
 
 check_settings() {
-  [[ "$port" =~ ^[0-9]+$ ]] || fail "KOKORO_PORT must be a number, not \"$port\"."
-  [[ "$wait_seconds" =~ ^[0-9]+$ ]] || fail "KOKORO_WAIT_SECONDS must be a number, not \"$wait_seconds\"."
+  [[ "$port" =~ ^[0-9]+$ ]] || fail "KOKORO_PORT must be a number, not \"$port\""
+  [[ "$wait_seconds" =~ ^[0-9]+$ ]] || fail "KOKORO_WAIT_SECONDS must be a number, not \"$wait_seconds\""
 }
 
 require_docker() {
-  docker_installed || fail "Docker is not installed. Install Docker Desktop (https://www.docker.com/products/docker-desktop/) or Rancher Desktop (https://rancherdesktop.io/), then run this again."
-  docker_running || fail "Docker is installed but not running. Start Docker Desktop or Rancher Desktop, then run this again."
+  docker_installed || fail "Docker isn't installed" "install Docker Desktop or Rancher Desktop"
+  docker_running || fail "Docker isn't running" "start Docker Desktop or Rancher Desktop"
 }
 
 create_container() {
   local run_options=(-d --name "$container" -p "127.0.0.1:$port:8880" --restart unless-stopped)
   case "$image" in *-gpu*) run_options+=(--gpus all) ;; esac
-  if image_downloaded; then
-    say "Creating the Kokoro container \"$container\"."
-  else
-    say "Setting up Kokoro for the first time. This downloads about 1.5 GB and can take several minutes."
+  if ! image_downloaded; then
+    printf 'Downloading Kokoro '
+    paint 1 2 '(about 1.5 GB, first time only)'
+    printf '…\n'
   fi
   docker run "${run_options[@]}" "$image" >/dev/null
 }
 
+show_waiting() {
+  if is_terminal 1; then
+    printf '\r\033[KStarting Kokoro '
+    paint 1 2 "· $1s"
+  else
+    printf '.'
+  fi
+}
+
+end_waiting() {
+  if is_terminal 1; then printf '\r\033[K'; else printf '\n'; fi
+}
+
 wait_until_ready() {
-  command -v curl >/dev/null 2>&1 || fail "curl is not installed, so this script cannot check whether Kokoro answers. Install curl, then run: scripts/kokoro.sh status"
-  local deadline=$((SECONDS + wait_seconds))
+  command -v curl >/dev/null 2>&1 || fail "curl isn't installed" "install curl"
+  local started=$SECONDS deadline=$((SECONDS + wait_seconds))
   if ! voices_json >/dev/null; then
-    printf 'Waiting for Kokoro to answer'
+    printf 'Starting Kokoro'
     until voices_json >/dev/null; do
       case "$(container_state)" in
         exited | dead | restarting)
-          printf '\n'
-          fail "Kokoro stopped unexpectedly while starting. See what went wrong with: docker logs $container"
+          end_waiting
+          fail "Kokoro stopped while starting" "docker logs $container"
           ;;
       esac
       if ((SECONDS >= deadline)); then
-        printf '\n'
-        fail "Kokoro did not answer at $kokoro_url within $wait_seconds seconds. Check the setup with: scripts/kokoro.sh status
-See what Kokoro reports with: docker logs $container"
+        end_waiting
+        fail "Kokoro didn't answer at $kokoro_url within ${wait_seconds}s" "docker logs $container"
       fi
-      printf '.'
+      show_waiting $((SECONDS - started))
       sleep 2
     done
-    printf '\n'
+    end_waiting
   fi
-  say "Kokoro is ready at $kokoro_url"
+  ok "Kokoro ready" "$kokoro_url"
 }
 
 start_kokoro() {
   require_docker
   case "$(container_state)" in
     "") create_container ;;
-    running) say "Kokoro is already running." ;;
-    *) say "Starting Kokoro."; docker start "$container" >/dev/null ;;
+    running) ;;
+    *) docker start "$container" >/dev/null ;;
   esac
   wait_until_ready
 }
 
 stop_kokoro() {
-  docker_installed || { say "Docker is not installed, so Kokoro is not running."; return; }
-  docker_running || { say "Docker is not running, so Kokoro is not running either."; return; }
+  docker_installed || { muted "Nothing to stop · Docker isn't installed"; return; }
+  docker_running || { muted "Nothing to stop · Docker isn't running"; return; }
   case "$(container_state)" in
-    "") say "There is no Kokoro container named \"$container\". Nothing to stop." ;;
-    running|restarting|paused)
+    "") muted "Nothing to stop · no Kokoro container" ;;
+    running | restarting | paused)
       docker stop "$container" >/dev/null
-      say "Kokoro stopped. It stays stopped until you run: scripts/kokoro.sh start"
+      ok "Kokoro stopped" "stays off until scripts/kokoro.sh start"
       ;;
-    *) say "Kokoro is already stopped." ;;
+    *) ok "Kokoro already stopped" ;;
   esac
 }
 
@@ -92,7 +132,7 @@ report_network() {
   local addresses address local_only=yes listed_ports=""
   addresses="$(published_addresses)"
   if [[ -z "$addresses" ]]; then
-    say "Network: Kokoro's port is not published, so the app cannot reach it. Fix it with: scripts/kokoro.sh reset"
+    warn "Kokoro's port isn't published" "scripts/kokoro.sh reset"
     return
   fi
   while IFS= read -r address; do
@@ -103,151 +143,137 @@ report_network() {
       *) local_only=no ;;
     esac
   done <<<"$addresses"
-  if [[ "$local_only" == yes ]]; then
-    say "Network: only this computer can reach Kokoro."
-  else
-    say "Network: warning, Kokoro listens on all network interfaces, so other computers on your network can reach it. Limit it to this computer with: scripts/kokoro.sh reset"
+  if [[ "$local_only" == no ]]; then
+    warn "Reachable from your network" "scripts/kokoro.sh reset"
   fi
   case " $listed_ports " in
     *" $port "*) ;;
-    *) say "Port: Kokoro is published on port${listed_ports}, but this script checks port $port. Set KOKORO_PORT or run: scripts/kokoro.sh reset" ;;
+    *) warn "Kokoro uses port${listed_ports}, not $port" "scripts/kokoro.sh reset" ;;
   esac
 }
 
-report_docker_and_container() {
-  if ! docker_installed; then
-    say "Docker: not installed. Install Docker Desktop (https://www.docker.com/products/docker-desktop/) or Rancher Desktop (https://rancherdesktop.io/)."
-    return
-  fi
-  say "Docker: installed."
-  if ! docker_running; then
-    say "Docker: not running. Start Docker Desktop or Rancher Desktop."
-    return
-  fi
-  say "Docker: running."
-  local state
-  state="$(container_state)"
-  case "$state" in
-    "") say "Container: there is no Kokoro container named \"$container\". Create it with: scripts/kokoro.sh start"; return ;;
-    running) say "Container: \"$container\" exists and is running." ;;
-    *) say "Container: \"$container\" exists but is stopped. Start it with: scripts/kokoro.sh start" ;;
+report_layers() {
+  docker_installed || { problem "Docker isn't installed" "install Docker Desktop or Rancher Desktop"; return 1; }
+  docker_running || { problem "Docker isn't running" "start Docker Desktop or Rancher Desktop"; return 1; }
+  ok "Docker running"
+  case "$(container_state)" in
+    "") problem "No Kokoro container" "scripts/kokoro.sh start"; return 1 ;;
+    running) ;;
+    *) problem "Kokoro stopped" "scripts/kokoro.sh start"; return 1 ;;
   esac
-  report_network
 }
 
 status_kokoro() {
-  report_docker_and_container
-  local json
-  if json="$(voices_json)"; then
-    say "Kokoro: answering at $kokoro_url with $(count_voices <<<"$json") voices."
-  else
-    say "Kokoro: not answering at $kokoro_url."
-    return 1
+  local json="" answering=no layers=ok
+  if json="$(voices_json)"; then answering=yes; fi
+  report_layers || layers=missing
+  if [[ "$answering" == yes ]]; then
+    ok "Kokoro running" "$(count_voices <<<"$json") voices · $kokoro_url"
+  elif [[ "$layers" == ok ]]; then
+    problem "Kokoro isn't answering at $kokoro_url" "scripts/kokoro.sh start"
   fi
+  [[ "$layers" == missing ]] || report_network
+  [[ "$answering" == yes ]]
 }
 
 confirm_change() {
   local answer=""
-  read -r -p "Continue? [y/N] " answer || true
+  read -r -p "$1 [y/N] " answer || { if [[ -t 0 ]]; then printf '\n' >&2; fi; }
   case "$answer" in
     y | Y | yes | Yes | YES) ;;
-    *) fail "Nothing changed." ;;
+    *) muted "Nothing changed" 2; exit 1 ;;
   esac
 }
 
 remove_container() {
   [[ -n "$(container_state)" ]] || return 0
   docker rm -f "$container" >/dev/null
-  say "Removed the Kokoro container \"$container\"."
 }
 
 remove_image() {
   image_downloaded || return 0
-  docker image rm "$image" >/dev/null || fail "Docker could not remove the image $image. See the message above."
-  say "Removed the Kokoro image $image."
+  docker image rm "$image" >/dev/null || fail "Docker couldn't remove $image" "see Docker's message above"
 }
 
 reset_kokoro() {
   case "${1:-}" in
     "" | --yes) ;;
-    *) printf 'Unknown option: %s\nUse: scripts/kokoro.sh reset [--yes]\n' "$1" >&2; exit 2 ;;
+    *) fail "Unknown option $1" "scripts/kokoro.sh reset [--yes]" 2 ;;
   esac
   require_docker
-  say "Reset removes the Kokoro container \"$container\" and creates it again, reachable only from this computer on port $port."
-  if image_downloaded; then
-    say "The downloaded Kokoro image is kept, so nothing is downloaded again."
-  else
-    say "The image $image is not downloaded yet, so Kokoro downloads it first."
+  if [[ "${1:-}" != --yes ]]; then
+    if image_downloaded; then
+      confirm_change "Recreate the Kokoro container? The download is kept."
+    else
+      confirm_change "Recreate the Kokoro container? It downloads about 1.5 GB first."
+    fi
   fi
-  [[ "${1:-}" == --yes ]] || confirm_change
   remove_container
   start_kokoro
 }
 
-describe_removal() {
-  local include_image="$1"
-  if [[ -z "$(container_state)" ]]; then
-    say "There is no Kokoro container named \"$container\"."
-  elif [[ "$include_image" == yes ]]; then
-    say "This removes the Kokoro container \"$container\"."
-  elif image_downloaded; then
-    say "This removes the Kokoro container \"$container\". The next start creates it again without downloading."
-    say "The downloaded Kokoro image is kept. To remove it too, run: scripts/kokoro.sh remove --all"
+removal_question() {
+  local has_container="$1" has_image="$2" include_image="$3"
+  if [[ "$has_container" == yes && "$has_image" == yes && "$include_image" == yes ]]; then
+    printf 'Remove the Kokoro container and the download (about 1.5 GB)?'
+  elif [[ "$has_container" == yes && "$has_image" == yes ]]; then
+    printf 'Remove the Kokoro container? The download is kept.'
+  elif [[ "$has_container" == yes ]]; then
+    printf 'Remove the Kokoro container?'
   else
-    say "This removes the Kokoro container \"$container\". The image $image is not downloaded, so the next start downloads it first."
+    printf 'Remove the Kokoro download (about 1.5 GB)?'
   fi
-  [[ "$include_image" == yes ]] || return 0
-  if image_downloaded; then
-    say "This removes the downloaded Kokoro image $image to free about 1.5 GB. The next start downloads it again."
-  else
-    say "The Kokoro image $image is not downloaded, so there is no image to remove."
-  fi
-}
-
-something_to_remove() {
-  [[ -n "$(container_state)" ]] || { [[ "$1" == yes ]] && image_downloaded; }
 }
 
 remove_kokoro() {
-  local include_image=no confirmed=no option
+  local include_image=no confirmed=no option has_container=no has_image=no
   for option in "$@"; do
     case "$option" in
       --all) include_image=yes ;;
       --yes) confirmed=yes ;;
-      *) printf 'Unknown option: %s\nUse: scripts/kokoro.sh remove [--all] [--yes]\n' "$option" >&2; exit 2 ;;
+      *) fail "Unknown option $option" "scripts/kokoro.sh remove [--all] [--yes]" 2 ;;
     esac
   done
-  docker_installed || { say "Docker is not installed, so there is no Kokoro container or image to remove."; return; }
-  docker_running || fail "Docker is not running, so nothing was removed. Start Docker Desktop or Rancher Desktop, then run this again."
-  describe_removal "$include_image"
-  if ! something_to_remove "$include_image"; then
-    say "Nothing to remove."
+  docker_installed || { muted "Nothing to remove · Docker isn't installed"; return; }
+  docker_running || fail "Docker isn't running" "start Docker Desktop or Rancher Desktop"
+  if [[ -n "$(container_state)" ]]; then has_container=yes; fi
+  if image_downloaded; then has_image=yes; fi
+  if [[ "$has_container" == no && "$include_image" == no ]]; then
+    muted "Nothing to remove · no Kokoro container"
     return
   fi
-  [[ "$confirmed" == yes ]] || confirm_change
+  if [[ "$has_container" == no && "$has_image" == no ]]; then
+    muted "Nothing to remove · no Kokoro container or download"
+    return
+  fi
+  [[ "$confirmed" == yes ]] || confirm_change "$(removal_question "$has_container" "$has_image" "$include_image")"
   remove_container
   [[ "$include_image" == no ]] || remove_image
+  ok "Removed"
 }
 
 show_help() {
   printf '%s\n' \
-    'kokoro <start|stop|status|reset|remove|help>' \
-    '' \
     'Runs Kokoro, the local voice server for AI voiceover, in Docker.' \
-    '  start                 Create or start Kokoro and wait until it answers' \
+    'Usage: scripts/kokoro.sh <command>' \
+    '  start                 Start Kokoro and wait until it answers' \
     '  stop                  Stop Kokoro; it stays installed' \
-    '  status                Show whether Docker and Kokoro are running' \
-    '  reset [--yes]         Remove and recreate the Kokoro container; no new download' \
-    '  remove [--yes]        Remove the Kokoro container; the downloaded image stays' \
-    '  remove --all [--yes]  Also remove the downloaded image (about 1.5 GB) to uninstall Kokoro' \
+    '  status                Check Docker and Kokoro' \
+    '  reset [--yes]         Recreate the container; the download is kept' \
+    '  remove [--yes]        Remove the container; the download is kept' \
+    '  remove --all [--yes]  Also remove the download (about 1.5 GB)' \
     '  help                  Show this help' \
-    '' \
-    'Settings (environment variables):' \
-    '  KOKORO_CONTAINER     Container name (default kokoro)' \
-    '  KOKORO_PORT          Port on this computer (default 8880)' \
-    '  KOKORO_IMAGE         Docker image (default ghcr.io/remsky/kokoro-fastapi-cpu:v0.9.0)' \
-    '                       An image with -gpu in its name also gets --gpus all' \
-    '  KOKORO_WAIT_SECONDS  How long start waits for Kokoro (default 180)'
+    'Environment:'
+  show_setting KOKORO_CONTAINER 'Container name' kokoro
+  show_setting KOKORO_PORT 'Port on this computer' 8880
+  show_setting KOKORO_IMAGE 'Docker image; -gpu in the name adds --gpus all' ghcr.io/remsky/kokoro-fastapi-cpu:v0.9.0
+  show_setting KOKORO_WAIT_SECONDS 'Seconds start waits for Kokoro' 180
+}
+
+show_setting() {
+  printf '  %-21s %s ' "$1" "$2"
+  paint 1 2 "($3)"
+  printf '\n'
 }
 
 check_settings
@@ -258,5 +284,5 @@ case "${1:-help}" in
   reset) reset_kokoro "${2:-}" ;;
   remove) remove_kokoro "${@:2}" ;;
   help) show_help ;;
-  *) printf 'Unknown command: %s\nUse: scripts/kokoro.sh help\n' "$1" >&2; exit 2 ;;
+  *) fail "Unknown command $1" "scripts/kokoro.sh help" 2 ;;
 esac

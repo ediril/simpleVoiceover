@@ -229,7 +229,7 @@ simpleVoiceover can turn a script into speech with [Kokoro](https://huggingface.
    powershell -ExecutionPolicy Bypass -File scripts\kokoro.ps1 start
    ```
 
-   The first start downloads about 1.5 GB and can take several minutes. The script waits until Kokoro answers and then shows `Kokoro is ready at http://localhost:8880`. Kokoro then starts automatically whenever Docker starts, and only this computer can reach it.
+   The first start downloads about 1.5 GB and can take several minutes. The script waits until Kokoro answers and then shows `✓ Kokoro ready · http://localhost:8880`. Kokoro then starts automatically whenever Docker starts, and only this computer can reach it.
 
 3. Open <http://localhost:8880/web> in a browser. Kokoro's test page confirms that the server is running.
 
