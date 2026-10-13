@@ -219,19 +219,31 @@ simpleVoiceover can turn a script into speech with [Kokoro](https://huggingface.
 ### Set up Kokoro
 
 1. Install and start Docker: [Docker Desktop](https://www.docker.com/products/docker-desktop/) or [Rancher Desktop](https://rancherdesktop.io/) on Windows and macOS, or Docker Engine on Linux.
-2. Start Kokoro:
+2. Start Kokoro from a copy of this repository. The [`scripts/kokoro.sh`](scripts/kokoro.sh) script (macOS and Linux) and the [`scripts/kokoro.ps1`](scripts/kokoro.ps1) script (Windows) run Docker for you and explain each step.
 
    ```bash
-   docker run -d --name kokoro -p 8880:8880 --restart unless-stopped ghcr.io/remsky/kokoro-fastapi-cpu:v0.9.0
+   scripts/kokoro.sh start
    ```
 
-   The first run downloads about 1.5 GB. Kokoro then starts automatically whenever Docker starts.
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File scripts\kokoro.ps1 start
+   ```
+
+   The first start downloads about 1.5 GB and can take several minutes. The script waits until Kokoro answers and then shows `Kokoro is ready at http://localhost:8880`. Kokoro then starts automatically whenever Docker starts, and only this computer can reach it.
 
 3. Open <http://localhost:8880/web> in a browser. Kokoro's test page confirms that the server is running.
 
-With an NVIDIA graphics card, use `ghcr.io/remsky/kokoro-fastapi-gpu:v0.9.0` and add `--gpus all` for faster generation.
+The same script also has `status`, `stop`, and `reset` commands. `status` checks Docker, the Kokoro container and the server, and counts the voices. `reset` creates the container again without a new download; it also fixes a Kokoro that listens on all network interfaces. Run `scripts/kokoro.sh help` for the settings, such as `KOKORO_PORT` for a different port.
 
-If the app shows **Kokoro isn't ready**, Docker or the Kokoro container is not running. Start Docker, then run `docker start kokoro`.
+With an NVIDIA graphics card, use the GPU image for faster generation. The script adds `--gpus all` for it:
+
+```bash
+KOKORO_IMAGE=ghcr.io/remsky/kokoro-fastapi-gpu:v0.9.0 scripts/kokoro.sh start
+```
+
+If a CPU Kokoro container already exists, run `KOKORO_IMAGE=ghcr.io/remsky/kokoro-fastapi-gpu:v0.9.0 scripts/kokoro.sh reset` instead. On Windows, set `$env:KOKORO_IMAGE` before you run the script.
+
+If the app shows **Kokoro isn't ready**, Docker or the Kokoro container is not running. Run `scripts/kokoro.sh status` to see which one, then `scripts/kokoro.sh start`. On Windows, use `scripts\kokoro.ps1 status` and `scripts\kokoro.ps1 start` with the same `powershell -ExecutionPolicy Bypass -File` prefix.
 
 ### Write and generate a voiceover
 
