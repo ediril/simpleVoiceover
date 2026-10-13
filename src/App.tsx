@@ -69,6 +69,11 @@ export default function App() {
         onAddTrack={studio.addTrack}
         onRemoveClip={studio.removeClip}
         getLevel={studio.getLevel}
+        scriptStatus={studio.scriptStatus}
+        onAddScriptClip={studio.addScriptClip}
+        onSaveScript={studio.saveScript}
+        onGenerateScripts={studio.generateScripts}
+        onCancelGeneration={studio.cancelGeneration}
       />
       <StatusBar {...studio} />
       <Notice {...studio} />

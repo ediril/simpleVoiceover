@@ -19,6 +19,7 @@ type Props = Pick<
   | 'play'
   | 'record'
   | 'inputLevel'
+  | 'generating'
 > & { preview: ReactNode }
 
 export default function Transport({
@@ -35,8 +36,10 @@ export default function Transport({
   play,
   record,
   inputLevel,
+  generating,
   preview,
 }: Props) {
+  const waiting = generating && !playing && !recording
   return (
     <section className="transport" aria-label={t('transport.controls')}>
       <div className="transport-controls">
@@ -54,9 +57,9 @@ export default function Transport({
         </button>
         <button
           className="play-button"
-          title={t('transport.playTitle')}
+          title={waiting ? t('transport.waitForGeneration') : t('transport.playTitle')}
           aria-label={playing ? t('transport.pause') : t('transport.play')}
-          disabled={recording || !!busy}
+          disabled={recording || !!busy || waiting}
           onClick={() => void play()}
         >
           {playing ? (
@@ -76,7 +79,8 @@ export default function Transport({
         </button>
         <button
           className={`record-button ${recording ? 'recording' : ''}`}
-          disabled={!!busy}
+          title={waiting ? t('transport.waitForGeneration') : undefined}
+          disabled={!!busy || waiting}
           onClick={() => void record()}
         >
           <span className="record-circle" />

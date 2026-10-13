@@ -8,6 +8,7 @@ import {
   MousePointer2,
   Plus,
   Scissors,
+  TextCursorInput,
   Trash2,
 } from 'lucide-react'
 import type { Track } from '../types'
@@ -85,6 +86,16 @@ export default function TimelineToolbar({
           disabled={recording}
         >
           <Scissors size={15} />
+        </button>
+        <button
+          className={`tl-tool ${tool === 'script' ? 'is-active' : ''}`}
+          title={t('tools.scriptTitle')}
+          aria-label={t('tools.script')}
+          aria-pressed={tool === 'script'}
+          onClick={() => onToolChange('script')}
+          disabled={recording}
+        >
+          <TextCursorInput size={15} />
         </button>
         <button
           className="tl-tool"

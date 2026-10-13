@@ -1,22 +1,21 @@
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import type { Clip, Track, MediaAsset } from '../types'
+import type { ClipEditMode } from '../protocol'
 import type { TimelineProps } from './types'
 import type { TimelineViewport } from './useTimelineViewport'
-import { clamp } from './viewport'
 import { clipBoundaries, snapDelta } from './snapping'
+import { clipEditRange, editedClip, sourceDuration } from './clipEdit'
 interface ClipDrag {
   pointerId: number
   originX: number
   pixelsPerSecond: number
   trackId: string
   clip: Clip
-  mode: 'move' | 'left' | 'right'
+  mode: ClipEditMode
   sourceDuration: number
   moved: boolean
   next: Clip
 }
-
-const minimumClipDuration = 1 / 48000
 
 export function useClipDrag(
   props: TimelineProps,
@@ -65,6 +64,7 @@ export function useClipDrag(
     if (track.locked || recording || operationPending || pending.current) return
     const edge = (event.target as HTMLElement).closest<HTMLElement>('[data-trim]')?.dataset.trim
     if (tool === 'split' && !edge) {
+      if (clip.script) return
       const left = rulerRef.current?.getBoundingClientRect().left ?? 0
       const time = view.start + (event.clientX - left) / pixelsPerSecond
       onSplitClip(track.id, clip.id, time)
@@ -79,7 +79,7 @@ export function useClipDrag(
       trackId: track.id,
       clip,
       mode: edge === 'left' || edge === 'right' ? edge : 'move',
-      sourceDuration: assetMap.get(clip.assetId)?.duration ?? clip.offset + clip.duration,
+      sourceDuration: sourceDuration(clip, clip.assetId ? assetMap.get(clip.assetId) : undefined),
       moved: false,
       next: clip,
     }
@@ -93,18 +93,7 @@ export function useClipDrag(
     let delta = (event.clientX - current.originX) / current.pixelsPerSecond
     const original = current.clip
     if (props.snapping) {
-      const minimum =
-        current.mode === 'right'
-          ? minimumClipDuration - original.duration
-          : current.mode === 'left'
-            ? -Math.min(original.start, original.offset)
-            : -original.start
-      const maximum =
-        current.mode === 'left'
-          ? original.duration - minimumClipDuration
-          : current.mode === 'right'
-            ? current.sourceDuration - original.offset - original.duration
-            : Infinity
+      const { minimum, maximum } = clipEditRange(original, current.mode, current.sourceDuration)
       const edges =
         current.mode === 'move'
           ? [original.start, original.start + original.duration]
@@ -118,27 +107,7 @@ export function useClipDrag(
         maximum,
       )
     }
-    let next = { ...original }
-    if (current.mode === 'move') next.start = Math.max(0, original.start + delta)
-    if (current.mode === 'left') {
-      const adjusted = clamp(
-        delta,
-        -Math.min(original.start, original.offset),
-        original.duration - minimumClipDuration,
-      )
-      next = {
-        ...next,
-        start: original.start + adjusted,
-        offset: original.offset + adjusted,
-        duration: original.duration - adjusted,
-      }
-    }
-    if (current.mode === 'right')
-      next.duration = clamp(
-        original.duration + delta,
-        minimumClipDuration,
-        current.sourceDuration - original.offset,
-      )
+    const next = editedClip(original, current.mode, delta, current.sourceDuration)
     current.next = next
     setPreview({ trackId: current.trackId, clip: next })
   }

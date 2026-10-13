@@ -11,9 +11,17 @@ export interface OperationProgress {
 }
 
 export interface Snapshot {
-  project: { id: string; name: string; tracks: Track[]; assets: Omit<MediaAsset, 'url'>[] }
+  project: {
+    id: string
+    name: string
+    tracks: Track[]
+    assets: Omit<MediaAsset, 'url'>[]
+    voice?: string
+  }
   config: {
     workingDirectory: string
+    speechUrl: string
+    speechVoice: string
     projectFile: string | null
     dirty: boolean
     language?: LanguagePreference
@@ -24,6 +32,18 @@ export interface Snapshot {
   duration: number
   canUndo: boolean
   canRedo: boolean
+}
+export type ClipEditMode = 'move' | 'left' | 'right'
+export interface ScriptClipRef {
+  trackId: string
+  clipId: string
+}
+export type GenerationState = 'queued' | 'generating' | 'done' | 'failed' | 'cancelled'
+export interface GenerationEvent {
+  clipId: string
+  state: GenerationState
+  progress: number
+  error?: string
 }
 export interface CommandPayloads {
   snapshot: Record<string, never>
@@ -51,7 +71,7 @@ export interface CommandPayloads {
   clip_remove: { trackId: string; clipId: string | null }
   clip_place: { trackId: string; assetId: string; position: number }
   asset_remove: { assetId: string }
-  clip_edit: { trackId: string; clipId: string; mode: string; delta: number }
+  clip_edit: { trackId: string; clipId: string; mode: ClipEditMode; delta: number }
   clip_split: { trackId: string; clipId: string; position: number }
   undo: Record<string, never>
   redo: Record<string, never>
@@ -60,6 +80,14 @@ export interface CommandPayloads {
   monitor: { enabled: boolean }
   record_begin: { position: number }
   record_end: Record<string, never>
+  script_add: { trackId: string; clipId: string; position: number; duration: number }
+  script_patch: { trackId: string; clipId: string; text: string }
+  project_voice: { voice?: string }
+  speech_preferences_patch: { url: string; voice: string }
+  script_generate: { clips: ScriptClipRef[] }
+  script_cancel: Record<string, never>
+  speech_voices: Record<string, never>
+  speech_help: Record<string, never>
 }
 export type CommandName = keyof CommandPayloads
 export interface CommandResult {
@@ -68,6 +96,7 @@ export interface CommandResult {
   snapshot?: Snapshot
   regions?: ClipRegion[]
   audioDevices?: AudioDeviceCatalog
+  voices?: string[]
 }
 
 export function decodeAudioPacket(data: ArrayBuffer) {

@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-const { calls, subscriptions, audio } = vi.hoisted(() => ({
-  calls: [] as { command: string; position?: number }[],
+const { calls, subscriptions, listeners, audio } = vi.hoisted(() => ({
+  calls: [] as { command: string; position?: number; [field: string]: unknown }[],
   subscriptions: [] as string[],
+  listeners: new Map<string, (event: { payload: unknown }) => void>(),
   audio: {
     flushed: false,
     closed: false,
@@ -20,14 +21,16 @@ vi.mock('@tauri-apps/api/core', () => ({
   invoke: async (_name: string, data: { request: { command: string } }) => {
     calls.push(data.request)
     if (data.request.command === 'play') await audio.playWait
+    if (data.request.command === 'speech_voices') return { voices: ['af_heart', 'bm_george'] }
     return data.request.command === 'audio_devices'
       ? { audioDevices: { inputs: [], outputs: [], nativeRouting: audio.native, available: true } }
       : {}
   },
 }))
 vi.mock('@tauri-apps/api/event', () => ({
-  listen: async (name: string) => {
+  listen: async (name: string, handler: (event: { payload: unknown }) => void) => {
     subscriptions.push(name)
+    listeners.set(name, handler)
     return () => {}
   },
 }))
@@ -65,6 +68,8 @@ vi.mock('../src/audio/BrowserAudioIO', () => ({
   },
 }))
 import { StudioClient } from '../src/services/StudioClient'
+import { projectVoicePayload } from '../src/timeline/script'
+import type { GenerationEvent } from '../src/protocol'
 
 class Socket {
   static OPEN = 1
@@ -95,6 +100,7 @@ afterEach(() => {
   vi.unstubAllGlobals()
   calls.length = 0
   subscriptions.length = 0
+  listeners.clear()
   Socket.instances.length = 0
   audio.flushed = false
   audio.closed = false
@@ -166,7 +172,7 @@ describe('Tauri studio transport', () => {
     const client = await connected()
     await client.request('track_patch', { trackId: 'test', patch: { mute: true } })
     expect(calls.map((call) => call.command)).toEqual(['audio_devices', 'snapshot', 'track_patch'])
-    expect(subscriptions).toEqual(['studio-snapshot', 'studio-progress'])
+    expect(subscriptions).toEqual(['studio-snapshot', 'studio-progress', 'studio-generation'])
     expect(Socket.instances[0].sent).toHaveLength(0)
     await client.play(3)
     expect(Socket.instances[0].sent.map((packet) => packet[0])).toEqual([2, 3, 3, 3])
@@ -225,6 +231,58 @@ describe('Tauri studio transport', () => {
     expect(audio.clears.filter((clear) => clear.active).map((clear) => clear.position)).toEqual([
       30,
     ])
+    client.close()
+  })
+  it('sends script and speech commands with their documented payloads', async () => {
+    const client = await connected()
+    const before = calls.length
+    const trackId = 'track'
+    const clipId = 'a6f3c1de-8a9b-4d3e-9c1f-2b7e5d4a3c21'
+    await client.request('script_add', { trackId, clipId, position: 2, duration: 4 })
+    await client.request('script_patch', { trackId, clipId, text: 'Hello there' })
+    await client.request('project_voice', projectVoicePayload('bf_emma'))
+    await client.request('project_voice', projectVoicePayload(''))
+    await client.request('speech_preferences_patch', {
+      url: 'http://localhost:8880',
+      voice: 'af_heart',
+    })
+    await client.request('clip_edit', { trackId, clipId, mode: 'right', delta: 1.5 })
+    await client.request('script_generate', { clips: [{ trackId, clipId }] })
+    await client.request('script_cancel')
+    const voices = await client.request('speech_voices')
+    await client.request('speech_help')
+    const language = expect.any(String)
+    expect(calls.slice(before)).toEqual([
+      { command: 'script_add', trackId, clipId, position: 2, duration: 4, language },
+      { command: 'script_patch', trackId, clipId, text: 'Hello there', language },
+      { command: 'project_voice', voice: 'bf_emma', language },
+      { command: 'project_voice', language },
+      {
+        command: 'speech_preferences_patch',
+        url: 'http://localhost:8880',
+        voice: 'af_heart',
+        language,
+      },
+      { command: 'clip_edit', trackId, clipId, mode: 'right', delta: 1.5, language },
+      { command: 'script_generate', clips: [{ trackId, clipId }], language },
+      { command: 'script_cancel', language },
+      { command: 'speech_voices', language },
+      { command: 'speech_help', language },
+    ])
+    expect(voices.voices).toEqual(['af_heart', 'bm_george'])
+    client.close()
+  })
+  it('delivers generation events to the subscriber', async () => {
+    const client = await connected()
+    const received: GenerationEvent[] = []
+    client.onGeneration = (event) => received.push(event)
+    const events: GenerationEvent[] = [
+      { clipId: 'clip', state: 'queued', progress: 0 },
+      { clipId: 'clip', state: 'generating', progress: 0.5 },
+      { clipId: 'clip', state: 'failed', progress: 0, error: '[[error.speechFailed|7b7d]]' },
+    ]
+    for (const payload of events) listeners.get('studio-generation')?.({ payload })
+    expect(received).toEqual(events)
     client.close()
   })
 })

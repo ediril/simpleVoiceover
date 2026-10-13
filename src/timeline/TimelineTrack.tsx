@@ -2,7 +2,7 @@ import { localizedName, t } from '../i18n'
 import { soloSources } from '../trackState'
 import type { CSSProperties } from 'react'
 import { LockKeyhole } from 'lucide-react'
-import { formatTime, type Track, type MediaAsset } from '../types'
+import { formatTime, type Clip, type Track, type MediaAsset } from '../types'
 import type { TimelineProps } from './types'
 import type { TimelineViewport } from './useTimelineViewport'
 import type { ClipDragging } from './useClipDrag'
@@ -10,6 +10,9 @@ import TrackHeader from './TrackHeader'
 import Waveform from './Waveform'
 import { clamp } from './viewport'
 import type { TimelineSelecting } from './useTimelineSelection'
+import type { ScriptDrawing } from './useScriptDraw'
+import ScriptClipBody from './ScriptClipBody'
+import { isScriptClip } from './script'
 type Props = Pick<
   TimelineProps,
   | 'selectedTrackId'
@@ -26,12 +29,17 @@ type Props = Pick<
   | 'recordStart'
   | 'selection'
   | 'tool'
+  | 'scriptStatus'
+  | 'onEditClip'
+  | 'onGenerateScripts'
+  | 'onCancelGeneration'
 > & {
   track: Track
   index: number
   viewport: TimelineViewport
   clipDragging: ClipDragging
   selecting: TimelineSelecting
+  scriptDrawing: ScriptDrawing
   assetMap: Map<string, MediaAsset>
 }
 export default function TimelineTrack({
@@ -55,9 +63,16 @@ export default function TimelineTrack({
   selecting,
   selection,
   tool: propsTool,
+  scriptStatus,
+  onEditClip,
+  onGenerateScripts,
+  onCancelGeneration,
+  scriptDrawing,
 }: Props) {
   const { ticks, view, pixelsPerSecond, laneWidth } = viewport
   const { preview, drag, beginClipDrag, moveClip, finishClip } = clipDragging
+  const displayed = (original: Clip) =>
+    preview?.trackId === track.id && preview.clip.id === original.id ? preview.clip : original
   const soloTracks = soloSources(track, tracks)
   const soloHint = soloTracks.length
     ? t('track.silencedBySolo', {
@@ -85,11 +100,16 @@ export default function TimelineTrack({
       <div
         data-track-id={track.id}
         className={`tl-lane ${track.locked ? 'is-locked' : ''}`}
+        data-track-kind={track.kind}
         onPointerDown={(event) => {
-          if (event.button === 0) {
+          if (event.button === 0 && !scriptDrawing.begin(event, track)) {
             selecting.beginMarquee(event, track)
           }
         }}
+        onPointerMove={scriptDrawing.move}
+        onPointerUp={(event) => scriptDrawing.finish(event)}
+        onPointerCancel={(event) => scriptDrawing.finish(event, true)}
+        onLostPointerCapture={(event) => scriptDrawing.finish(event, true)}
       >
         {ticks.map((tick) => (
           <span
@@ -108,10 +128,35 @@ export default function TimelineTrack({
           </span>
         )}
         {track.clips.map((original) => {
-          const clip =
-            preview?.trackId === track.id && preview.clip.id === original.id
-              ? preview.clip
-              : original
+          const clip = displayed(original)
+          if (!isScriptClip(clip)) return null
+          const status = scriptStatus(clip)
+          if (status.state !== 'overflow') return null
+          const right = (clip.start + clip.duration - view.start) * pixelsPerSecond
+          const spillLeft = clamp(right, 0, laneWidth)
+          const spillWidth =
+            clamp(right + status.overflowSeconds * pixelsPerSecond, 0, laneWidth) - spillLeft
+          if (spillWidth <= 0) return null
+          const seconds = status.overflowSeconds.toFixed(1)
+          return (
+            <div
+              key={`${clip.id}-spill`}
+              className="tl-script-spill"
+              style={{ left: spillLeft, width: spillWidth }}
+              title={t('script.overflowTitle', { seconds })}
+              onPointerDown={(event) => event.stopPropagation()}
+              onDoubleClick={(event) => {
+                event.stopPropagation()
+                if (!track.locked && !recording && !operationPending)
+                  void onEditClip(track.id, clip.id, 'right', status.overflowSeconds)
+              }}
+            >
+              <span>{t('script.overflow', { seconds })}</span>
+            </div>
+          )
+        })}
+        {track.clips.map((original) => {
+          const clip = displayed(original)
           const left = (clip.start - view.start) * pixelsPerSecond
           const right = left + clip.duration * pixelsPerSecond
           if ((right <= 0 || left >= laneWidth) && drag.current?.clip.id !== clip.id) return null
@@ -119,20 +164,24 @@ export default function TimelineTrack({
           const visibleRight = clamp(right, 0, laneWidth)
           const visibleWidth = Math.max(1, visibleRight - visibleLeft)
           const crop = (visibleLeft - left) / pixelsPerSecond
-          const asset = assetMap.get(clip.assetId)
+          const asset = clip.assetId ? assetMap.get(clip.assetId) : undefined
+          const script = isScriptClip(clip) ? clip : null
+          const status = script ? scriptStatus(script) : null
+          const description = script ? script.script.text || t('script.clip') : clip.name
           return (
             <div
               key={clip.id}
-              className={`tl-clip ${selectedClipId === clip.id || selection?.regions.some((region) => region.clipId === clip.id) ? 'is-selected' : ''} ${track.mute || soloHint ? 'is-muted' : ''} ${preview?.clip.id === clip.id || selecting.preview?.selection.regions.some((region) => region.clipId === clip.id) ? 'is-dragging' : ''}`}
+              data-clip-id={clip.id}
+              className={`tl-clip ${status ? `is-script is-${status.state}` : ''} ${selectedClipId === clip.id || selection?.regions.some((region) => region.clipId === clip.id) ? 'is-selected' : ''} ${track.mute || soloHint ? 'is-muted' : ''} ${preview?.clip.id === clip.id || selecting.preview?.selection.regions.some((region) => region.clipId === clip.id) ? 'is-dragging' : ''}`}
               style={{ left: visibleLeft, width: visibleWidth }}
               tabIndex={0}
               role="button"
               aria-label={t('clip.description', {
-                value0: clip.name,
+                value0: description,
                 value1: formatTime(clip.start, true),
                 value2: formatTime(clip.duration, true),
               })}
-              title={`${soloHint ? `${soloHint}\n` : ''}${clip.name} · ${formatTime(clip.start, true)} — ${formatTime(clip.start + clip.duration, true)}`}
+              title={`${soloHint ? `${soloHint}\n` : ''}${description} · ${formatTime(clip.start, true)} — ${formatTime(clip.start + clip.duration, true)}`}
               onPointerDown={(event) => {
                 if ((event.target as Element).closest('[data-trim]') || propsTool === 'split')
                   beginClipDrag(event, track, original)
@@ -142,6 +191,7 @@ export default function TimelineTrack({
               onPointerUp={(event) => finishClip(event)}
               onPointerCancel={(event) => finishClip(event, true)}
               onKeyDown={(event) => {
+                if (event.target !== event.currentTarget) return
                 if (event.key === 'Enter') {
                   event.preventDefault()
                   event.stopPropagation()
@@ -150,17 +200,34 @@ export default function TimelineTrack({
                 }
               }}
             >
-              <div className="tl-clip-heading">
-                <span>{clip.name}</span>
-                {track.locked && <LockKeyhole size={9} />}
-              </div>
-              <Waveform
-                asset={asset}
-                offset={clip.offset + crop}
-                duration={visibleWidth / pixelsPerSecond}
-                width={visibleWidth}
-                color={track.color}
-              />
+              {script && status ? (
+                <ScriptClipBody
+                  clip={script}
+                  status={status}
+                  asset={asset}
+                  locked={track.locked}
+                  color={track.color}
+                  waveformOffset={clip.offset + crop}
+                  waveformDuration={visibleWidth / pixelsPerSecond}
+                  width={visibleWidth}
+                  onRegenerate={() => onGenerateScripts([{ trackId: track.id, clipId: clip.id }])}
+                  onCancel={onCancelGeneration}
+                />
+              ) : (
+                <>
+                  <div className="tl-clip-heading">
+                    <span>{clip.name}</span>
+                    {track.locked && <LockKeyhole size={9} />}
+                  </div>
+                  <Waveform
+                    asset={asset}
+                    offset={clip.offset + crop}
+                    duration={visibleWidth / pixelsPerSecond}
+                    width={visibleWidth}
+                    color={track.color}
+                  />
+                </>
+              )}
               {!track.locked && !recording && left >= 0 && (
                 <span
                   className="tl-trim tl-trim-left"
@@ -178,6 +245,19 @@ export default function TimelineTrack({
             </div>
           )
         })}
+        {scriptDrawing.ghost?.trackId === track.id && (
+          <div
+            className="tl-script-ghost"
+            style={{
+              left: clamp((scriptDrawing.ghost.start - view.start) * pixelsPerSecond, 0, laneWidth),
+              width: Math.max(
+                2,
+                clamp((scriptDrawing.ghost.end - view.start) * pixelsPerSecond, 0, laneWidth) -
+                  clamp((scriptDrawing.ghost.start - view.start) * pixelsPerSecond, 0, laneWidth),
+              ),
+            }}
+          />
+        )}
         {selection?.trackIds.includes(track.id) && selection.end > selection.start && (
           <div
             className="tl-range-selection"

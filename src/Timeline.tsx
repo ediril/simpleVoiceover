@@ -1,5 +1,5 @@
 import { t } from './i18n'
-import { useMemo } from 'react'
+import { useMemo, useState, type MouseEvent as ReactMouseEvent } from 'react'
 import type { TimelineProps } from './timeline/types'
 import { useTimelineViewport } from './timeline/useTimelineViewport'
 import { useClipDrag } from './timeline/useClipDrag'
@@ -8,6 +8,9 @@ import TimelineRuler from './timeline/TimelineRuler'
 import TimelineTrack from './timeline/TimelineTrack'
 import TimelineScrollbar from './timeline/TimelineScrollbar'
 import { useTimelineSelection } from './timeline/useTimelineSelection'
+import { useScriptDraw } from './timeline/useScriptDraw'
+import ScriptEditor from './timeline/ScriptEditor'
+import { isScriptClip } from './timeline/script'
 import './timeline.css'
 
 export default function Timeline(props: TimelineProps) {
@@ -16,6 +19,20 @@ export default function Timeline(props: TimelineProps) {
   const assetMap = useMemo(() => new Map(assets.map((asset) => [asset.id, asset])), [assets])
   const clipDragging = useClipDrag(props, viewport, assetMap)
   const selecting = useTimelineSelection(props, viewport)
+  const [editingClipId, setEditingClipId] = useState<string | null>(null)
+  const scriptDrawing = useScriptDraw(props, viewport, setEditingClipId)
+  const editingTrack = tracks.find((track) => track.clips.some((clip) => clip.id === editingClipId))
+  const editingClip = editingTrack?.clips.find((clip) => clip.id === editingClipId)
+  const openScriptEditor = (event: ReactMouseEvent<HTMLElement>) => {
+    const element = document.elementFromPoint(event.clientX, event.clientY)
+    if (!element || element.closest('button')) return
+    const clipId = element.closest<HTMLElement>('[data-clip-id]')?.dataset.clipId
+    const track = tracks.find((track) => track.clips.some((clip) => clip.id === clipId))
+    const clip = track?.clips.find((clip) => clip.id === clipId)
+    if (!track || !clip || !isScriptClip(clip) || track.locked || recording) return
+    if (props.operationPending) return
+    setEditingClipId(clip.id)
+  }
   const selectedTrack = tracks.find((track) =>
     track.clips.some((clip) => clip.id === selectedClipId),
   )
@@ -32,7 +49,7 @@ export default function Timeline(props: TimelineProps) {
   return (
     <section
       ref={viewport.timelineRef}
-      className={`tl-timeline ${tool === 'split' ? 'tl-split-mode' : ''} ${viewport.panning ? 'is-panning' : ''}`}
+      className={`tl-timeline ${tool === 'split' ? 'tl-split-mode' : ''} ${tool === 'script' ? 'tl-script-mode' : ''} ${viewport.panning ? 'is-panning' : ''}`}
       onPointerDownCapture={(event) => {
         viewport.beginPan(event)
         if (event.button === 0) selecting.captureMarquee(event)
@@ -47,6 +64,7 @@ export default function Timeline(props: TimelineProps) {
         viewport.endPan(event)
         selecting.finish(event, true)
       }}
+      onDoubleClick={openScriptEditor}
       onAuxClick={(event) => {
         if (event.button === 1) event.preventDefault()
       }}
@@ -69,6 +87,7 @@ export default function Timeline(props: TimelineProps) {
             viewport={viewport}
             clipDragging={clipDragging}
             selecting={selecting}
+            scriptDrawing={scriptDrawing}
             selection={selecting.preview?.selection ?? props.selection}
             assetMap={assetMap}
           />
@@ -83,6 +102,18 @@ export default function Timeline(props: TimelineProps) {
         )}
       </div>
       <TimelineScrollbar {...props} viewport={viewport} />
+      {editingTrack && editingClip && isScriptClip(editingClip) && (
+        <ScriptEditor
+          key={editingClip.id}
+          clipId={editingClip.id}
+          initialText={editingClip.script.text}
+          timelineRef={viewport.timelineRef}
+          onSave={(text, generate) =>
+            props.onSaveScript(editingTrack.id, editingClip.id, text, generate)
+          }
+          onClose={() => setEditingClipId(null)}
+        />
+      )}
     </section>
   )
 }

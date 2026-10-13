@@ -2,6 +2,7 @@ import { localizedName, t } from '../i18n'
 import EffectsPanel from '../EffectsPanel'
 import FilesPanel from './FilesPanel'
 import MixerPanel from './MixerPanel'
+import ScriptPanel from './ScriptPanel'
 import type { StudioController } from '../useStudio'
 
 export default function Inspector(panel: StudioController) {
@@ -14,21 +15,17 @@ export default function Inspector(panel: StudioController) {
           ['files', t('inspector.files')],
           ['mixer', t('inspector.mixer')],
           ['effects', t('inspector.effects')],
+          ['script', t('inspector.script')],
         ].map(([id, label]) => (
           <button key={id} role="tab" aria-selected={tab === id} onClick={() => setTab(id)}>
             {label}
           </button>
         ))}
-        <button
-          className="empty-tab"
-          disabled
-          title={t('inspector.reserved')}
-          aria-label={t('inspector.reserved')}
-        />
       </div>
       <div className="inspector-body" role="tabpanel">
         {tab === 'files' && <FilesPanel {...panel} />}
         {tab === 'mixer' && <MixerPanel {...panel} />}
+        {tab === 'script' && <ScriptPanel {...panel} />}
         {tab === 'effects' && selectedTrack && (
           <>
             <div className="selected-track">

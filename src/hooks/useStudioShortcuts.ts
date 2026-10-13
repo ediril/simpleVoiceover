@@ -1,5 +1,6 @@
 import { useEffect } from 'react'
 import { shortcutFor } from '../shortcuts'
+import type { TimelineTool } from '../timeline/types'
 
 interface Actions {
   play: () => Promise<void>
@@ -11,7 +12,7 @@ interface Actions {
   copyClips: () => void
   pasteClips: () => Promise<void>
   seek: (position: number) => void
-  setTool: (tool: 'select' | 'split') => void
+  setTool: (tool: TimelineTool) => void
   blocked: boolean
 }
 

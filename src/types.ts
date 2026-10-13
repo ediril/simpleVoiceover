@@ -29,13 +29,24 @@ export interface MediaAsset {
   peakFrames: number
 }
 
+export interface ScriptTake {
+  text: string
+  voice: string
+}
+
+export interface ClipScript {
+  text: string
+  take?: ScriptTake
+}
+
 export interface Clip {
   id: string
-  assetId: string
+  assetId: string | null
   name: string
   start: number
   offset: number
   duration: number
+  script?: ClipScript
 }
 
 export interface Track {

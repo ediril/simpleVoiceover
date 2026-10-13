@@ -17,6 +17,7 @@ import {
   type CommandName,
   type CommandResult,
   type OperationProgress,
+  type GenerationEvent,
 } from '../protocol'
 
 export class StudioClient {
@@ -44,6 +45,7 @@ export class StudioClient {
   }
   onSnapshot: (value: Snapshot) => void = () => {}
   onProgress: (value: OperationProgress) => void = () => {}
+  onGeneration: (value: GenerationEvent) => void = () => {}
   onPosition: (value: number) => void = () => {}
   onEnded: () => void = () => {}
   onError: (reason: Error) => void = () => {}
@@ -82,6 +84,7 @@ export class StudioClient {
     const unlisten = await Promise.all([
       listen<Snapshot>('studio-snapshot', (event) => this.onSnapshot(event.payload)),
       listen<OperationProgress>('studio-progress', (event) => this.onProgress(event.payload)),
+      listen<GenerationEvent>('studio-generation', (event) => this.onGeneration(event.payload)),
     ])
     if (this.disposed) {
       unlisten.forEach((unsubscribe) => unsubscribe())

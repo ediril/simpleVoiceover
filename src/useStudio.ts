@@ -7,7 +7,13 @@ import {
 } from './i18n'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { StudioClient } from './services/StudioClient'
-import type { CommandName, CommandPayloads, Snapshot, OperationProgress } from './protocol'
+import type {
+  ClipEditMode,
+  CommandName,
+  CommandPayloads,
+  Snapshot,
+  OperationProgress,
+} from './protocol'
 import type { MediaAsset, Track } from './types'
 import { useTransport } from './hooks/useTransport'
 import { useDesktopLifecycle } from './hooks/useDesktopLifecycle'
@@ -15,6 +21,10 @@ import { useStudioShortcuts } from './hooks/useStudioShortcuts'
 import { useNativeDrop } from './hooks/useNativeDrop'
 import { useOperationIndicator } from './hooks/useOperationIndicator'
 import { useTransientMessage } from './hooks/useTransientMessage'
+import { useScriptGeneration } from './hooks/useScriptGeneration'
+import { useScriptClips } from './hooks/useScriptClips'
+import { isSpeechUnavailable, speechNoticeDuration } from './timeline/script'
+import type { TimelineTool } from './timeline/types'
 import { emptyAudioDevices } from './audio/devices'
 import {
   copySelection,
@@ -32,14 +42,14 @@ export function useStudio() {
   const [selection, setSelection] = useState<TimelineSelection | null>(null)
   const [clipboard, setClipboard] = useState<ClipClipboard | null>(null)
   const [tab, setTab] = useState('files')
-  const [tool, setTool] = useState<'select' | 'split'>('select')
+  const [tool, setTool] = useState<TimelineTool>('select')
   const [snapping, setSnapping] = useState(true)
   const [trackToRemove, setTrackToRemove] = useState<Track | null>(null)
   const [busy, setBusy] = useState('')
   const visibleBusy = useOperationIndicator(busy)
   const [progress, setProgress] = useState<OperationProgress | null>(null)
   const [notice, setNotice] = useTransientMessage()
-  const [error, setError] = useTransientMessage()
+  const [error, setError, errorAction] = useTransientMessage()
   const [help, setHelp] = useState(false)
   const [settings, setSettings] = useState(false)
   const [audioDevices, setAudioDeviceCatalog] = useState(emptyAudioDevices)
@@ -106,6 +116,20 @@ export function useStudio() {
       engineRef.current = null
     }
   }, [showError])
+  const openSpeechHelp = useCallback(() => {
+    void request('speech_help').catch(showError)
+  }, [request, showError])
+  const showSpeechError = useCallback(
+    (reason: unknown) => {
+      if (!isSpeechUnavailable(reason)) return showError(reason)
+      setError(t('speech.notReady'), {
+        action: { label: t('speech.setupHelp'), run: openSpeechHelp },
+        duration: speechNoticeDuration,
+      })
+    },
+    [showError, setError, openSpeechHelp],
+  )
+  const { generations, generating } = useScriptGeneration(engineRef, showSpeechError)
   const transport = useTransport({
     engineRef,
     busy,
@@ -117,26 +141,34 @@ export function useStudio() {
     armedTrack,
     assets,
     tracks,
+    generating,
   })
-  const action = async <K extends CommandName>(
+  const operationBlocked = !!busy || transport.recording
+  const operation = async <T>(
     label: string,
-    command: K,
-    payload: CommandPayloads[K] = {} as CommandPayloads[K],
+    run: () => Promise<T>,
+    onFailure: (reason: unknown) => void = showError,
   ) => {
-    if (busy || transport.recording) return
+    if (operationBlocked) return
     setBusy(label)
     setProgress(null)
     setError('')
     try {
       await transport.pause()
-      return await request(command, payload)
+      return await run()
     } catch (reason) {
-      showError(reason)
+      onFailure(reason)
     } finally {
       setBusy('')
       setProgress(null)
     }
   }
+  const action = <K extends CommandName>(
+    label: string,
+    command: K,
+    payload: CommandPayloads[K] = {} as CommandPayloads[K],
+    onFailure: (reason: unknown) => void = showError,
+  ) => operation(label, () => request(command, payload), onFailure)
   const updateTrack = (id: string, patch: Partial<Track>) => {
     if (busy || (transport.recording && 'armed' in patch)) return
     void request('track_patch', { trackId: id, patch }).catch(showError)
@@ -319,7 +351,7 @@ export function useStudio() {
       if (result) selectClip(null)
     })
   }
-  const editClip = (trackId: string, clipId: string, mode: string, delta: number) => {
+  const editClip = (trackId: string, clipId: string, mode: ClipEditMode, delta: number) => {
     return action(t('action.editClip'), 'clip_edit', { trackId, clipId, mode, delta }).then(Boolean)
   }
   const splitClip = (trackId: string, clipId: string, position: number) => {
@@ -341,6 +373,17 @@ export function useStudio() {
       setTrackToRemove(null)
     }
   }
+  const scripts = useScriptClips({
+    snapshot,
+    assets,
+    generations,
+    request,
+    operation,
+    operationBlocked,
+    showError,
+    showSpeechError,
+    setNotice,
+  })
   const getLevel = useCallback((id: string) => engineRef.current?.getLevel(id) ?? 0, [])
   useStudioShortcuts({
     play: transport.play,
@@ -386,6 +429,7 @@ export function useStudio() {
     setNotice,
     error,
     setError,
+    errorAction,
     help,
     setHelp,
     settings,
@@ -420,6 +464,10 @@ export function useStudio() {
     chooseWorkingDirectory,
     importNative,
     openNative: lifecycle.requestOpen,
+    openSpeechHelp,
+    showSpeechError,
+    generating,
+    ...scripts,
     ...transport,
     ...lifecycle,
   }

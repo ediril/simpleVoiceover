@@ -2,6 +2,7 @@ import { useEffect } from 'react'
 import { X } from 'lucide-react'
 import { languages, systemLanguage, t, validPreference } from '../i18n'
 import type { StudioController } from '../useStudio'
+import VoiceoverSettings from './VoiceoverSettings'
 
 type Props = Pick<
   StudioController,
@@ -15,6 +16,11 @@ type Props = Pick<
   | 'outputDevice'
   | 'changeAudioDevices'
   | 'recording'
+  | 'speechUrl'
+  | 'defaultVoice'
+  | 'loadVoices'
+  | 'saveSpeechPreferences'
+  | 'openSpeechHelp'
 >
 
 export default function SettingsDialog({
@@ -28,6 +34,7 @@ export default function SettingsDialog({
   outputDevice,
   changeAudioDevices,
   recording,
+  ...voiceover
 }: Props) {
   useEffect(() => {
     const escape = (event: KeyboardEvent) => {
@@ -118,6 +125,7 @@ export default function SettingsDialog({
         <p className="hint muted">
           {t(audioDevices.available ? 'settings.audioHint' : 'settings.audioUnavailable')}
         </p>
+        <VoiceoverSettings {...voiceover} operationPending={operationPending} />
       </section>
     </div>
   )
