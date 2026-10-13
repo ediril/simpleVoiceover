@@ -233,7 +233,7 @@ simpleVoiceover can turn a script into speech with [Kokoro](https://huggingface.
 
 3. Open <http://localhost:8880/web> in a browser. Kokoro's test page confirms that the server is running.
 
-The same script also has `status`, `stop`, and `reset` commands. `status` checks Docker, the Kokoro container and the server, and counts the voices. `reset` creates the container again without a new download; it also fixes a Kokoro that listens on all network interfaces. Run `scripts/kokoro.sh help` for the settings, such as `KOKORO_PORT` for a different port.
+The same script also has `status`, `stop`, `reset`, and `remove` commands. `status` checks Docker, the Kokoro container and the server, and counts the voices. `reset` creates the container again without a new download; it also fixes a Kokoro that listens on all network interfaces. `remove` removes the Kokoro container but keeps the downloaded image, so the next `start` creates it again without a download. To uninstall Kokoro completely, run `scripts/kokoro.sh remove --all`, which also removes the image and frees about 1.5 GB. `reset` and `remove` ask before they change anything; add `--yes` to skip the question. Run `scripts/kokoro.sh help` for the settings, such as `KOKORO_PORT` for a different port.
 
 With an NVIDIA graphics card, use the GPU image for faster generation. The script adds `--gpus all` for it:
 

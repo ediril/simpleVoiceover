@@ -146,13 +146,25 @@ status_kokoro() {
   fi
 }
 
-confirm_reset() {
+confirm_change() {
   local answer=""
   read -r -p "Continue? [y/N] " answer || true
   case "$answer" in
     y | Y | yes | Yes | YES) ;;
     *) fail "Nothing changed." ;;
   esac
+}
+
+remove_container() {
+  [[ -n "$(container_state)" ]] || return 0
+  docker rm -f "$container" >/dev/null
+  say "Removed the Kokoro container \"$container\"."
+}
+
+remove_image() {
+  image_downloaded || return 0
+  docker image rm "$image" >/dev/null || fail "Docker could not remove the image $image. See the message above."
+  say "Removed the Kokoro image $image."
 }
 
 reset_kokoro() {
@@ -167,24 +179,68 @@ reset_kokoro() {
   else
     say "The image $image is not downloaded yet, so Kokoro downloads it first."
   fi
-  [[ "${1:-}" == --yes ]] || confirm_reset
-  if [[ -n "$(container_state)" ]]; then
-    docker rm -f "$container" >/dev/null
-    say "Removed the old container."
-  fi
+  [[ "${1:-}" == --yes ]] || confirm_change
+  remove_container
   start_kokoro
+}
+
+describe_removal() {
+  local include_image="$1"
+  if [[ -z "$(container_state)" ]]; then
+    say "There is no Kokoro container named \"$container\"."
+  elif [[ "$include_image" == yes ]]; then
+    say "This removes the Kokoro container \"$container\"."
+  elif image_downloaded; then
+    say "This removes the Kokoro container \"$container\". The next start creates it again without downloading."
+    say "The downloaded Kokoro image is kept. To remove it too, run: scripts/kokoro.sh remove --all"
+  else
+    say "This removes the Kokoro container \"$container\". The image $image is not downloaded, so the next start downloads it first."
+  fi
+  [[ "$include_image" == yes ]] || return 0
+  if image_downloaded; then
+    say "This removes the downloaded Kokoro image $image to free about 1.5 GB. The next start downloads it again."
+  else
+    say "The Kokoro image $image is not downloaded, so there is no image to remove."
+  fi
+}
+
+something_to_remove() {
+  [[ -n "$(container_state)" ]] || { [[ "$1" == yes ]] && image_downloaded; }
+}
+
+remove_kokoro() {
+  local include_image=no confirmed=no option
+  for option in "$@"; do
+    case "$option" in
+      --all) include_image=yes ;;
+      --yes) confirmed=yes ;;
+      *) printf 'Unknown option: %s\nUse: scripts/kokoro.sh remove [--all] [--yes]\n' "$option" >&2; exit 2 ;;
+    esac
+  done
+  docker_installed || { say "Docker is not installed, so there is no Kokoro container or image to remove."; return; }
+  docker_running || fail "Docker is not running, so nothing was removed. Start Docker Desktop or Rancher Desktop, then run this again."
+  describe_removal "$include_image"
+  if ! something_to_remove "$include_image"; then
+    say "Nothing to remove."
+    return
+  fi
+  [[ "$confirmed" == yes ]] || confirm_change
+  remove_container
+  [[ "$include_image" == no ]] || remove_image
 }
 
 show_help() {
   printf '%s\n' \
-    'kokoro <start|stop|status|reset|help>' \
+    'kokoro <start|stop|status|reset|remove|help>' \
     '' \
     'Runs Kokoro, the local voice server for AI voiceover, in Docker.' \
-    '  start          Create or start Kokoro and wait until it answers' \
-    '  stop           Stop Kokoro; it stays installed' \
-    '  status         Show whether Docker and Kokoro are running' \
-    '  reset [--yes]  Remove and recreate the Kokoro container; no new download' \
-    '  help           Show this help' \
+    '  start                 Create or start Kokoro and wait until it answers' \
+    '  stop                  Stop Kokoro; it stays installed' \
+    '  status                Show whether Docker and Kokoro are running' \
+    '  reset [--yes]         Remove and recreate the Kokoro container; no new download' \
+    '  remove [--yes]        Remove the Kokoro container; the downloaded image stays' \
+    '  remove --all [--yes]  Also remove the downloaded image (about 1.5 GB) to uninstall Kokoro' \
+    '  help                  Show this help' \
     '' \
     'Settings (environment variables):' \
     '  KOKORO_CONTAINER     Container name (default kokoro)' \
@@ -200,6 +256,7 @@ case "${1:-help}" in
   stop) stop_kokoro ;;
   status) status_kokoro ;;
   reset) reset_kokoro "${2:-}" ;;
+  remove) remove_kokoro "${@:2}" ;;
   help) show_help ;;
   *) printf 'Unknown command: %s\nUse: scripts/kokoro.sh help\n' "$1" >&2; exit 2 ;;
 esac

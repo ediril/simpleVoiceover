@@ -1,5 +1,6 @@
 $command = if ($args.Count -gt 0) { [string]$args[0] } else { 'help' }
 $option = if ($args.Count -gt 1) { [string]$args[1] } else { '' }
+$options = @($args | Select-Object -Skip 1 | ForEach-Object { [string]$_ })
 $container = if ($env:KOKORO_CONTAINER) { $env:KOKORO_CONTAINER } else { 'kokoro' }
 $port = if ($env:KOKORO_PORT) { $env:KOKORO_PORT } else { '8880' }
 $image = if ($env:KOKORO_IMAGE) { $env:KOKORO_IMAGE } else { 'ghcr.io/remsky/kokoro-fastapi-cpu:v0.9.0' }
@@ -175,6 +176,25 @@ function Show-Status {
     Write-Host "Kokoro: answering at $kokoroUrl with $(@($voices.voices).Count) voices."
 }
 
+function Confirm-Change {
+    $answer = Read-Host 'Continue? [y/N]'
+    if ($answer -notmatch '^(y|yes)$') { Stop-WithMessage 'Nothing changed.' }
+}
+
+function Remove-KokoroContainer {
+    if (-not (Get-ContainerState)) { return }
+    docker rm -f $container | Out-Null
+    if ($LASTEXITCODE -ne 0) { Stop-WithMessage 'Docker could not remove the Kokoro container. See the message above.' }
+    Write-Host "Removed the Kokoro container `"$container`"."
+}
+
+function Remove-KokoroImage {
+    if (-not (Test-ImageDownloaded)) { return }
+    docker image rm $image | Out-Null
+    if ($LASTEXITCODE -ne 0) { Stop-WithMessage "Docker could not remove the image $image. See the message above." }
+    Write-Host "Removed the Kokoro image $image."
+}
+
 function Reset-Kokoro {
     if ($option -and $option -notin @('--yes', '-yes')) {
         Write-Host "Unknown option: $option"
@@ -187,28 +207,72 @@ function Reset-Kokoro {
     } else {
         Write-Host "The image $image is not downloaded yet, so Kokoro downloads it first."
     }
-    if (-not $option) {
-        $answer = Read-Host 'Continue? [y/N]'
-        if ($answer -notmatch '^(y|yes)$') { Stop-WithMessage 'Nothing changed.' }
-    }
-    if (Get-ContainerState) {
-        docker rm -f $container | Out-Null
-        if ($LASTEXITCODE -ne 0) { Stop-WithMessage 'Docker could not remove the old container. See the message above.' }
-        Write-Host 'Removed the old container.'
-    }
+    if (-not $option) { Confirm-Change }
+    Remove-KokoroContainer
     Start-Kokoro
+}
+
+function Show-Removal([bool]$IncludeImage) {
+    if (-not (Get-ContainerState)) {
+        Write-Host "There is no Kokoro container named `"$container`"."
+    } elseif ($IncludeImage) {
+        Write-Host "This removes the Kokoro container `"$container`"."
+    } elseif (Test-ImageDownloaded) {
+        Write-Host "This removes the Kokoro container `"$container`". The next start creates it again without downloading."
+        Write-Host "The downloaded Kokoro image is kept. To remove it too, run: $scriptCommand remove --all"
+    } else {
+        Write-Host "This removes the Kokoro container `"$container`". The image $image is not downloaded, so the next start downloads it first."
+    }
+    if (-not $IncludeImage) { return }
+    if (Test-ImageDownloaded) {
+        Write-Host "This removes the downloaded Kokoro image $image to free about 1.5 GB. The next start downloads it again."
+    } else {
+        Write-Host "The Kokoro image $image is not downloaded, so there is no image to remove."
+    }
+}
+
+function Test-SomethingToRemove([bool]$IncludeImage) {
+    if (Get-ContainerState) { return $true }
+    return $IncludeImage -and (Test-ImageDownloaded)
+}
+
+function Remove-Kokoro {
+    $includeImage = $false
+    $confirmed = $false
+    foreach ($removeOption in $options) {
+        if ($removeOption -in @('--all', '-all')) {
+            $includeImage = $true
+        } elseif ($removeOption -in @('--yes', '-yes')) {
+            $confirmed = $true
+        } else {
+            Write-Host "Unknown option: $removeOption"
+            Stop-WithMessage "Use: $scriptCommand remove [--all] [--yes]" 2
+        }
+    }
+    if (-not (Test-DockerInstalled)) { Write-Host 'Docker is not installed, so there is no Kokoro container or image to remove.'; return }
+    if (-not (Test-DockerRunning)) { Stop-WithMessage 'Docker is not running, so nothing was removed. Start Docker Desktop or Rancher Desktop, then run this again.' }
+    Show-Removal $includeImage
+    if (-not (Test-SomethingToRemove $includeImage)) {
+        Write-Host 'Nothing to remove.'
+        return
+    }
+    if (-not $confirmed) { Confirm-Change }
+    Remove-KokoroContainer
+    if ($includeImage) { Remove-KokoroImage }
 }
 
 function Show-Help {
     Write-Host @"
-$scriptCommand <start|stop|status|reset|help>
+$scriptCommand <start|stop|status|reset|remove|help>
 
 Runs Kokoro, the local voice server for AI voiceover, in Docker.
-  start          Create or start Kokoro and wait until it answers
-  stop           Stop Kokoro; it stays installed
-  status         Show whether Docker and Kokoro are running
-  reset [--yes]  Remove and recreate the Kokoro container; no new download
-  help           Show this help
+  start                 Create or start Kokoro and wait until it answers
+  stop                  Stop Kokoro; it stays installed
+  status                Show whether Docker and Kokoro are running
+  reset [--yes]         Remove and recreate the Kokoro container; no new download
+  remove [--yes]        Remove the Kokoro container; the downloaded image stays
+  remove --all [--yes]  Also remove the downloaded image (about 1.5 GB) to uninstall Kokoro
+  help                  Show this help
 
 Settings (environment variables):
   KOKORO_CONTAINER     Container name (default kokoro)
@@ -225,6 +289,7 @@ switch ($command) {
     'stop' { Stop-Kokoro }
     'status' { Show-Status }
     'reset' { Reset-Kokoro }
+    'remove' { Remove-Kokoro }
     'help' { Show-Help }
     default {
         Write-Host "Unknown command: $command"
