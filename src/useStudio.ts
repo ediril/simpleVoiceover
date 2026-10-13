@@ -129,7 +129,7 @@ export function useStudio() {
     },
     [showError, setError, openSpeechHelp],
   )
-  const { generations, generating } = useScriptGeneration(engineRef, showSpeechError)
+  const { generations, generating } = useScriptGeneration(engineRef, snapshot, showSpeechError)
   const transport = useTransport({
     engineRef,
     busy,

@@ -37,3 +37,17 @@ export function shortcutFor(
   }
   return shortcuts[event.code] ?? null
 }
+
+const textEntrySelector = 'input,textarea,select,[contenteditable=true],[role="dialog"]'
+const activatableSelector = 'button,a[href],summary'
+const activationKeys = ['Space', 'Enter', 'NumpadEnter']
+
+interface KeyTarget {
+  closest: (selectors: string) => unknown
+}
+
+export function targetOwnsKey(target: EventTarget | KeyTarget | null, code: string) {
+  if (!target || !('closest' in target)) return false
+  if (target.closest(textEntrySelector)) return true
+  return activationKeys.includes(code) && !!target.closest(activatableSelector)
+}

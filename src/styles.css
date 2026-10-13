@@ -83,6 +83,24 @@ select {
 button svg {
   flex-shrink: 0;
 }
+.voice-select {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 9px;
+  border: 1px solid #3c4246;
+  border-radius: 5px;
+  background: #25292d;
+  color: #e5e8e1;
+  text-align: left;
+}
+.voice-select > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 h1,
 h2,
 h3,
@@ -1746,12 +1764,17 @@ kbd {
   margin: 0;
   padding: 0;
 }
-.script-list button {
+.script-list li {
+  display: flex;
+  gap: 4px;
+}
+.script-row {
   display: grid;
   grid-template-columns: 38px minmax(0, 1fr) auto;
   align-items: center;
   gap: 8px;
-  width: 100%;
+  flex: 1;
+  min-width: 0;
   padding: 7px 8px;
   border: 1px solid transparent;
   border-radius: 5px;
@@ -1759,11 +1782,36 @@ kbd {
   font-size: 11px;
   text-align: left;
 }
-.script-list button:not(:disabled):hover {
+.script-row:not(:disabled):hover {
   background: #2b3133;
 }
-.script-list button.is-selected {
+.script-row.is-selected {
   border-color: #69745f;
+}
+.script-row-action {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  gap: 5px;
+  padding: 0 9px;
+  border: 1px solid #3a4245;
+  border-radius: 5px;
+  background: #23282a;
+  color: var(--accent);
+  font-size: 10px;
+  white-space: nowrap;
+}
+.script-row-action:not(:disabled):hover {
+  background: #2b3133;
+}
+.script-row-action.is-regenerate {
+  justify-content: center;
+  width: 30px;
+  padding: 0;
+  color: #dac393;
+}
+.script-row-action.is-stop {
+  color: #a5bbeb;
 }
 .script-time {
   color: var(--muted);

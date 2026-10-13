@@ -1,9 +1,33 @@
 import { describe, expect, it } from 'vitest'
 import { decodeAudioPacket } from '../src/protocol'
-import { shortcutFor } from '../src/shortcuts'
+import { shortcutFor, targetOwnsKey } from '../src/shortcuts'
 import { dragViewport, thumbGeometry, zoomViewport } from '../src/timeline/viewport'
 
 describe('studio keyboard', () => {
+  const element = (...matching: string[]) => ({
+    closest: (selectors: string) =>
+      selectors.split(',').some((selector) => matching.includes(selector)) ? {} : null,
+  })
+  it('lets focused buttons keep Space and Enter but not other shortcuts', () => {
+    const button = element('button')
+    expect(targetOwnsKey(button, 'Space')).toBe(true)
+    expect(targetOwnsKey(button, 'Enter')).toBe(true)
+    expect(targetOwnsKey(button, 'NumpadEnter')).toBe(true)
+    expect(targetOwnsKey(element('a[href]'), 'Space')).toBe(true)
+    expect(targetOwnsKey(button, 'KeyZ')).toBe(false)
+    expect(targetOwnsKey(button, 'Delete')).toBe(false)
+  })
+  it('keeps every key in text fields and dialogs', () => {
+    expect(targetOwnsKey(element('input'), 'KeyR')).toBe(true)
+    expect(targetOwnsKey(element('textarea'), 'Space')).toBe(true)
+    expect(targetOwnsKey(element('[role="dialog"]'), 'Delete')).toBe(true)
+  })
+  it('leaves shortcuts to the timeline, its clips and the page body', () => {
+    expect(targetOwnsKey(element('[role="button"]'), 'Space')).toBe(false)
+    expect(targetOwnsKey(element(), 'Space')).toBe(false)
+    expect(targetOwnsKey(null, 'Space')).toBe(false)
+    expect(targetOwnsKey(new EventTarget(), 'Space')).toBe(false)
+  })
   const key = (code: string, ctrlKey = false, shiftKey = false, altKey = false) =>
     shortcutFor({ code, ctrlKey, shiftKey, altKey, metaKey: false })
   it('uses physical keys, without stealing modified editing shortcuts', () => {

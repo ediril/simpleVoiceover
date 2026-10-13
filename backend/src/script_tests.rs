@@ -127,11 +127,110 @@ fn script_clips_cannot_be_split_or_partially_edited() -> Result<()> {
     );
     run(
         &mut store,
-        json!({"command":"regions_edit","regions":[{"trackId":track_id,"clipId":clip_id,"from":0.,"to":4.}],"delta":2.,"trackOffset":1}),
+        json!({"command":"regions_edit","regions":[{"trackId":track_id,"clipId":clip_id,"from":0.,"to":4.}],"delta":2.,"trackOffset":0}),
     )?;
-    let moved = &store.project.tracks[2].clips[0];
-    assert_eq!((moved.id.as_str(), moved.start), (clip_id.as_str(), 2.));
+    let moved = script_clip(&store, &clip_id);
+    assert_eq!(moved.start, 2.);
+    assert!(
+        store.project.tracks[1]
+            .clips
+            .iter()
+            .any(|clip| clip.id == clip_id)
+    );
     assert!(moved.script.is_some());
+    Ok(())
+}
+
+fn voice_track_error(result: Result<impl Sized>) -> bool {
+    result.is_err_and(|error| error.to_string().contains("error.scriptVoiceTrack"))
+}
+
+fn draft_clip(text: &str) -> Clip {
+    Clip {
+        id: id(),
+        asset_id: None,
+        name: String::new(),
+        start: 0.,
+        offset: 0.,
+        duration: 2.,
+        script: Some(Script {
+            text: text.into(),
+            take: None,
+        }),
+    }
+}
+
+#[test]
+fn script_clips_are_added_only_on_the_voice_track() -> Result<()> {
+    let temporary = tempfile::tempdir()?;
+    let mut store = new_store(temporary.path())?;
+    assert_eq!(store.project.tracks[1].kind, "voice");
+    assert_eq!(store.project.tracks[2].kind, "audio");
+    assert!(voice_track_error(add_script(&mut store, 2, 0., 2.)));
+    assert!(voice_track_error(add_script(&mut store, 0, 0., 2.)));
+    assert!(store.project.tracks[2].clips.is_empty());
+    let clip_id = add_script(&mut store, 1, 0., 2.)?;
+    assert!(
+        store.project.tracks[1]
+            .clips
+            .iter()
+            .any(|clip| clip.id == clip_id)
+    );
+    Ok(())
+}
+
+#[test]
+fn script_clips_cannot_be_moved_or_pasted_onto_other_tracks() -> Result<()> {
+    let temporary = tempfile::tempdir()?;
+    let mut store = new_store(temporary.path())?;
+    let clip_id = add_script(&mut store, 1, 0., 4.)?;
+    let voice_id = store.project.tracks[1].id.clone();
+    let music_id = store.project.tracks[2].id.clone();
+    let project_id = store.project.id.clone();
+    assert!(voice_track_error(run(
+        &mut store,
+        json!({"command":"regions_edit","regions":[{"trackId":voice_id,"clipId":clip_id,"from":0.,"to":4.}],"delta":1.,"trackOffset":1}),
+    )));
+    assert!(store.project.tracks[2].clips.is_empty());
+    assert_eq!(script_clip(&store, &clip_id).start, 0.);
+    let copied = draft_clip("Copied line");
+    assert!(voice_track_error(run(
+        &mut store,
+        json!({"command":"clips_paste","projectId":project_id,"trackId":music_id,"position":5.,"clips":[{"trackOffset":0,"clip":copied}]}),
+    )));
+    assert!(voice_track_error(run(
+        &mut store,
+        json!({"command":"clips_paste","projectId":project_id,"trackId":voice_id,"position":5.,"clips":[{"trackOffset":0,"clip":copied},{"trackOffset":1,"clip":copied}]}),
+    )));
+    assert!(store.project.tracks[2].clips.is_empty());
+    run(
+        &mut store,
+        json!({"command":"clips_paste","projectId":project_id,"trackId":voice_id,"position":5.,"clips":[{"trackOffset":0,"clip":copied}]}),
+    )?;
+    assert!(
+        store.project.tracks[1]
+            .clips
+            .iter()
+            .any(|clip| clip.start == 5. && clip.script.is_some())
+    );
+    Ok(())
+}
+
+#[test]
+fn projects_with_script_clips_on_audio_tracks_still_load() -> Result<()> {
+    let temporary = tempfile::tempdir()?;
+    let mut store = new_store(temporary.path())?;
+    let legacy = draft_clip("Saved on the music track");
+    let mut project = store.project.clone();
+    project.tracks[2].clips.push(legacy.clone());
+    project.validate()?;
+    store.replace(project)?;
+    let file = temporary.path().join("saved").join("legacy.justspeak");
+    store.save(&file)?;
+    let mut reopened = new_store(&temporary.path().join("other"))?;
+    reopened.load(&file)?;
+    assert_eq!(reopened.project.tracks[2].clips[0].id, legacy.id);
+    Mixer::unscaled(&reopened)?.block(&reopened.project, 0, 1024, None, None)?;
     Ok(())
 }
 

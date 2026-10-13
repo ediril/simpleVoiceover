@@ -1,10 +1,12 @@
 import { t, type TranslationKey } from '../i18n'
-import { Square, WandSparkles } from 'lucide-react'
+import { RefreshCw, Square, WandSparkles } from 'lucide-react'
 import { formatTime } from '../types'
 import type { StudioController } from '../useStudio'
 import { useVoiceList } from '../hooks/useVoiceList'
-import type { ScriptClipState } from '../timeline/script'
+import { scriptRowAction, type ScriptClipState, type ScriptRowAction } from '../timeline/script'
+import { voiceName } from '../voices'
 import SpeechProblem from './SpeechProblem'
+import VoiceSelect from './VoiceSelect'
 
 type Props = Pick<
   StudioController,
@@ -38,6 +40,24 @@ const statusLabels: Record<ScriptClipState, TranslationKey> = {
   overflow: 'script.statusOverflow',
 }
 
+const rowActionLabels: Record<ScriptRowAction, TranslationKey> = {
+  generate: 'script.rowGenerate',
+  regenerate: 'script.rowRegenerate',
+  stop: 'script.rowStop',
+}
+
+const rowActionTitles: Record<ScriptRowAction, TranslationKey> = {
+  generate: 'script.rowGenerate',
+  regenerate: 'script.rowRegenerate',
+  stop: 'script.stop',
+}
+
+function RowActionIcon({ action }: { action: ScriptRowAction }) {
+  if (action === 'stop') return <Square size={9} fill="currentColor" />
+  if (action === 'regenerate') return <RefreshCw size={10} />
+  return <WandSparkles size={11} />
+}
+
 export default function ScriptPanel({
   scriptClips,
   scriptStatus,
@@ -62,8 +82,7 @@ export default function ScriptPanel({
   const [voiceList] = useVoiceList(loadVoices, showSpeechError)
   const blocked = recording || operationPending
   const listed = voiceList.status === 'ready' ? voiceList.voices : []
-  const voiceOptions =
-    projectVoice && !listed.includes(projectVoice) ? [projectVoice, ...listed] : listed
+  const generationBlocked = blocked || !!busy
   return (
     <div className="script-panel">
       <div className="panel-heading">
@@ -72,24 +91,19 @@ export default function ScriptPanel({
       {voiceList.status === 'failed' ? (
         <SpeechProblem error={voiceList.error} onHelp={openSpeechHelp} />
       ) : (
-        <select
-          aria-label={t('script.voice')}
+        <VoiceSelect
+          label={t('script.voice')}
           value={projectVoice ?? ''}
+          voices={listed}
           disabled={voiceList.status !== 'ready' || blocked}
-          onChange={(event) => changeProjectVoice(event.target.value)}
-        >
-          <option value="">{t('script.voiceDefault', { voice: defaultVoice })}</option>
-          {voiceOptions.map((voice) => (
-            <option key={voice} value={voice}>
-              {voice}
-            </option>
-          ))}
-        </select>
+          defaultLabel={t('script.voiceDefault', { voice: voiceName(defaultVoice) })}
+          onChange={changeProjectVoice}
+        />
       )}
       <div className="script-actions">
         <button
           className="button accent"
-          disabled={!pendingScripts.length || blocked || !!busy}
+          disabled={!pendingScripts.length || generationBlocked}
           onClick={() => generateScripts(pendingScripts)}
         >
           <WandSparkles size={14} />
@@ -106,12 +120,13 @@ export default function ScriptPanel({
       </div>
       {scriptClips.length ? (
         <ol className="script-list">
-          {scriptClips.map(({ trackId, clip }) => {
+          {scriptClips.map(({ trackId, locked, clip }) => {
             const status = scriptStatus(clip)
+            const action = scriptRowAction(status.state, clip.script.text, locked)
             return (
               <li key={clip.id}>
                 <button
-                  className={selectedClipId === clip.id ? 'is-selected' : ''}
+                  className={`script-row ${selectedClipId === clip.id ? 'is-selected' : ''}`}
                   onClick={() => {
                     setSelectedTrackId(trackId)
                     setSelectedClipId(clip.id)
@@ -126,6 +141,22 @@ export default function ScriptPanel({
                     {t(statusLabels[status.state])}
                   </span>
                 </button>
+                {action && (
+                  <button
+                    className={`script-row-action is-${action}`}
+                    title={t(rowActionTitles[action])}
+                    aria-label={action === 'regenerate' ? t(rowActionLabels[action]) : undefined}
+                    disabled={action !== 'stop' && generationBlocked}
+                    onClick={() =>
+                      action === 'stop'
+                        ? cancelGeneration()
+                        : generateScripts([{ trackId, clipId: clip.id }])
+                    }
+                  >
+                    <RowActionIcon action={action} />
+                    {action !== 'regenerate' && t(rowActionLabels[action])}
+                  </button>
+                )}
               </li>
             )
           })}

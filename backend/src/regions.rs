@@ -3,7 +3,7 @@ use crate::{
     model::{Clip, Project, SAMPLE_RATE, id},
     storage::Store,
 };
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::HashSet;
@@ -25,25 +25,28 @@ struct PasteClip {
 }
 
 fn compatible(project: &Project, track: usize, clip: &Clip) -> Result<()> {
+    let target = &project.tracks[track];
+    ensure!(!target.locked, crate::i18n::message("error.trackLocked"));
+    if clip.script.is_some() {
+        ensure!(
+            target.kind == "voice",
+            crate::i18n::message("error.scriptVoiceTrack")
+        );
+        return Ok(());
+    }
+    let asset_id = clip
+        .asset_id
+        .as_ref()
+        .context(crate::i18n::message("error.sourceMissing"))?;
+    let video = project
+        .assets
+        .iter()
+        .find(|asset| &asset.id == asset_id)
+        .context(crate::i18n::message("error.sourceMissing"))?
+        .kind
+        == "video";
     ensure!(
-        !project.tracks[track].locked,
-        crate::i18n::message("error.trackLocked")
-    );
-    let video = match &clip.asset_id {
-        _ if clip.script.is_some() => false,
-        Some(asset_id) => {
-            project
-                .assets
-                .iter()
-                .find(|asset| &asset.id == asset_id)
-                .context(crate::i18n::message("error.sourceMissing"))?
-                .kind
-                == "video"
-        }
-        None => bail!(crate::i18n::message("error.sourceMissing")),
-    };
-    ensure!(
-        video == (project.tracks[track].kind == "video"),
+        video == (target.kind == "video"),
         crate::i18n::message("error.selectCompatibleTrack")
     );
     Ok(())

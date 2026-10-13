@@ -1,8 +1,13 @@
 import { describe, expect, it } from 'vitest'
 import {
+  displayedGenerations,
+  estimatedProgress,
   estimatedSpeechSeconds,
+  expectedGenerationSeconds,
   fillRatio,
   generationReducer,
+  idleGenerationTracker,
+  initialSpeedFactor,
   isGenerating,
   isSpeechUnavailable,
   pendingScriptClips,
@@ -10,11 +15,15 @@ import {
   scriptClipStatus,
   scriptDraftRange,
   scriptDrawTarget,
+  scriptRowAction,
   scriptSaveRequests,
   singleLineText,
+  updatedSpeedFactor,
   type ActiveGeneration,
-  type ActiveGenerations,
+  type GenerationTracker,
   type ScriptClip,
+  type ScriptClipState,
+  type ScriptRowAction,
 } from '../src/timeline/script'
 import { editedClip, sourceDuration } from '../src/timeline/clipEdit'
 import { neutralEffects, type Clip, type Track } from '../src/types'
@@ -142,28 +151,122 @@ describe('generation reducer', () => {
     state: GenerationEvent['state'],
     progress = 0,
   ): GenerationEvent => ({ clipId, state, progress })
+  const apply = (tracker: GenerationTracker, value: GenerationEvent, at = 0, clip?: ScriptClip) =>
+    generationReducer(tracker, { type: 'event', event: value, at, clip })
   it('tracks queued and generating clips until done, failed or cancelled', () => {
-    let active: ActiveGenerations = {}
-    active = generationReducer(active, event('a', 'queued'))
-    active = generationReducer(active, event('b', 'queued'))
-    active = generationReducer(active, event('c', 'queued'))
-    expect(isGenerating(active)).toBe(true)
-    active = generationReducer(active, event('a', 'generating', 0.3))
-    expect(active.a).toEqual({ state: 'generating', progress: 0.3 })
-    active = generationReducer(active, event('a', 'generating', 0.6))
-    expect(active.a).toEqual({ state: 'generating', progress: 0.6 })
-    active = generationReducer(active, event('a', 'done', 1))
-    expect(Object.keys(active)).toEqual(['b', 'c'])
-    active = generationReducer(active, { ...event('b', 'failed'), error: 'boom' })
-    expect(Object.keys(active)).toEqual(['c'])
-    expect(isGenerating(active)).toBe(true)
-    active = generationReducer(active, event('c', 'cancelled'))
-    expect(active).toEqual({})
-    expect(isGenerating(active)).toBe(false)
+    let tracker = idleGenerationTracker
+    tracker = apply(tracker, event('a', 'queued'))
+    tracker = apply(tracker, event('b', 'queued'))
+    tracker = apply(tracker, event('c', 'queued'))
+    expect(isGenerating(tracker.active)).toBe(true)
+    tracker = apply(tracker, event('a', 'generating', 0.3))
+    expect(tracker.active.a).toMatchObject({ state: 'generating', progress: 0.3 })
+    tracker = apply(tracker, event('a', 'generating', 0.6))
+    expect(tracker.active.a).toMatchObject({ state: 'generating', progress: 0.6 })
+    tracker = apply(tracker, event('a', 'done', 1))
+    expect(Object.keys(tracker.active)).toEqual(['b', 'c'])
+    tracker = apply(tracker, { ...event('b', 'failed'), error: 'boom' })
+    expect(Object.keys(tracker.active)).toEqual(['c'])
+    expect(isGenerating(tracker.active)).toBe(true)
+    tracker = apply(tracker, event('c', 'cancelled'))
+    expect(tracker.active).toEqual({})
+    expect(isGenerating(tracker.active)).toBe(false)
   })
   it('keeps the same state for finished events of unknown clips', () => {
-    const active: ActiveGenerations = { a: { state: 'queued', progress: 0 } }
-    expect(generationReducer(active, event('z', 'cancelled'))).toBe(active)
+    const tracker = apply(idleGenerationTracker, event('a', 'queued'))
+    expect(apply(tracker, event('z', 'cancelled'))).toBe(tracker)
+  })
+  it('records the start time and expected duration once, when a clip starts generating', () => {
+    const tenWords = scriptClip({ script: { text: 'word '.repeat(10).trim() } })
+    let tracker = apply(idleGenerationTracker, event('clip', 'queued'), 500, tenWords)
+    tracker = apply(tracker, event('clip', 'generating'), 1000, tenWords)
+    tracker = apply(tracker, event('clip', 'generating', 0.2), 3000, tenWords)
+    expect(tracker.active.clip).toEqual({
+      state: 'generating',
+      progress: 0.2,
+      startedAt: 1000,
+      expectedSeconds: 8,
+      previousAssetId: 'take',
+    })
+  })
+  it('learns the speed factor from the finished take in a later snapshot', () => {
+    const before = scriptClip({ script: { text: 'word '.repeat(10).trim() } })
+    let tracker = apply(idleGenerationTracker, event('clip', 'generating'), 1000, before)
+    tracker = apply(tracker, event('clip', 'done', 1), 15000, before)
+    const snapshot = (clip: ScriptClip, duration: number) =>
+      generationReducer(tracker, {
+        type: 'snapshot',
+        tracks: [track('voice', [clip])],
+        assets: [{ id: clip.assetId ?? '', duration }],
+      })
+    expect(snapshot(before, 9)).toBe(tracker)
+    const learned = snapshot({ ...before, assetId: 'new take' }, 3.5)
+    expect(learned.speedFactor).toEqual({ value: 4, samples: 1 })
+    expect(learned.finished).toEqual({})
+    const next = apply(learned, event('other', 'generating'), 0, before)
+    expect(next.active.other).toMatchObject({ expectedSeconds: 16 })
+  })
+  it('forgets finished clips that were removed before their take arrived', () => {
+    let tracker = apply(idleGenerationTracker, event('clip', 'generating'), 0, scriptClip())
+    tracker = apply(tracker, event('clip', 'done', 1), 2000)
+    const forgotten = generationReducer(tracker, { type: 'snapshot', tracks: [], assets: [] })
+    expect(forgotten.finished).toEqual({})
+    expect(forgotten.speedFactor).toEqual(idleGenerationTracker.speedFactor)
+  })
+})
+
+describe('generation progress estimate', () => {
+  it('expects the speech estimate multiplied by the speed factor', () => {
+    expect(initialSpeedFactor).toBe(2)
+    expect(expectedGenerationSeconds('word '.repeat(10), initialSpeedFactor)).toBe(8)
+    expect(expectedGenerationSeconds('word '.repeat(10), 3.5)).toBe(14)
+  })
+  it('grows with elapsed time and stops at 95 % until the engine finishes', () => {
+    expect(estimatedProgress(0, 0, 8)).toBe(0)
+    expect(estimatedProgress(0, 2, 8)).toBe(0.25)
+    expect(estimatedProgress(0, 7.5, 8)).toBeCloseTo(0.9375)
+    expect(estimatedProgress(0, 8, 8)).toBe(0.95)
+    expect(estimatedProgress(0, 60, 8)).toBe(0.95)
+    expect(estimatedProgress(0, -1, 8)).toBe(0)
+  })
+  it('never shows less than the engine reports', () => {
+    expect(estimatedProgress(0.6, 2, 8)).toBe(0.6)
+    expect(estimatedProgress(0.1, 4, 8)).toBe(0.5)
+    expect(estimatedProgress(0.97, 60, 8)).toBe(0.97)
+    expect(estimatedProgress(0.4, 3, 0)).toBe(0.4)
+  })
+  it('replaces the starting factor with the first measurement, then smooths', () => {
+    const first = updatedSpeedFactor({ value: 2, samples: 0 }, 14, 3.5)
+    expect(first).toEqual({ value: 4, samples: 1 })
+    const second = updatedSpeedFactor(first, 12, 2)
+    expect(second).toEqual({ value: 5, samples: 2 })
+    const settled = updatedSpeedFactor({ value: 3, samples: 9 }, 10, 2)
+    expect(settled.value).toBeCloseTo(3.6)
+    expect(settled.samples).toBe(10)
+  })
+  it('ignores measurements without elapsed time or speech', () => {
+    const current = { value: 3, samples: 2 }
+    expect(updatedSpeedFactor(current, 0, 2)).toBe(current)
+    expect(updatedSpeedFactor(current, 5, 0)).toBe(current)
+    expect(updatedSpeedFactor(current, Number.NaN, 2)).toBe(current)
+  })
+  it('shows the time estimate for generating clips and leaves queued clips alone', () => {
+    const queued: ActiveGeneration = { state: 'queued', progress: 0 }
+    const active: GenerationTracker['active'] = {
+      queued,
+      running: {
+        state: 'generating',
+        progress: 0.1,
+        startedAt: 1000,
+        expectedSeconds: 8,
+        previousAssetId: null,
+      },
+    }
+    expect(displayedGenerations(active, 5000)).toEqual({
+      queued,
+      running: { state: 'generating', progress: 0.5 },
+    })
+    expect(displayedGenerations(active, 60000).running.progress).toBe(0.95)
   })
 })
 
@@ -249,15 +352,44 @@ describe('saving script text', () => {
 })
 
 describe('script drawing target', () => {
-  it('draws only on existing, unlocked, non-video tracks', () => {
-    const audio = track('audio', [])
+  it('draws only on existing, unlocked voice tracks', () => {
+    const voice = track('voice', [])
+    const audio = { ...track('audio', []), kind: 'audio' as const }
     const video = { ...track('video', []), kind: 'video' as const }
-    const tracks = [audio, video, track('locked', [], true)]
-    expect(scriptDrawTarget(tracks, 'audio')).toBe(audio)
+    const tracks = [voice, audio, video, track('locked', [], true)]
+    expect(scriptDrawTarget(tracks, 'voice')).toBe(voice)
+    expect(scriptDrawTarget(tracks, 'audio')).toBeUndefined()
     expect(scriptDrawTarget(tracks, 'video')).toBeUndefined()
     expect(scriptDrawTarget(tracks, 'locked')).toBeUndefined()
     expect(scriptDrawTarget(tracks, 'removed')).toBeUndefined()
   })
+})
+
+describe('script list row action', () => {
+  const cases: {
+    state: ScriptClipState
+    text: string
+    locked: boolean
+    expected: ScriptRowAction | null
+  }[] = [
+    { state: 'draft', text: 'Hello', locked: false, expected: 'generate' },
+    { state: 'draft', text: '   ', locked: false, expected: null },
+    { state: 'draft', text: 'Hello', locked: true, expected: null },
+    { state: 'stale', text: 'Hello', locked: false, expected: 'regenerate' },
+    { state: 'stale', text: '', locked: false, expected: null },
+    { state: 'stale', text: 'Hello', locked: true, expected: null },
+    { state: 'queued', text: 'Hello', locked: false, expected: 'stop' },
+    { state: 'generating', text: 'Hello', locked: false, expected: 'stop' },
+    { state: 'generating', text: 'Hello', locked: true, expected: 'stop' },
+    { state: 'fits', text: 'Hello', locked: false, expected: null },
+    { state: 'overflow', text: 'Hello', locked: false, expected: null },
+  ]
+  it.each(cases)(
+    '$state with "$text", locked $locked: $expected',
+    ({ state, text, locked, expected }) => {
+      expect(scriptRowAction(state, text, locked)).toBe(expected)
+    },
+  )
 })
 
 describe('script clip resizing', () => {

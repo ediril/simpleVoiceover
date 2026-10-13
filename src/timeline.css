@@ -566,7 +566,7 @@
 .tl-script-mode .tl-lane {
   cursor: cell;
 }
-.tl-script-mode .tl-lane[data-track-kind='video'] {
+.tl-script-mode .tl-lane:not([data-track-kind='voice']) {
   cursor: default;
 }
 .tl-clip.is-draft {

@@ -202,8 +202,12 @@ pub fn execute(store: &mut Store, value: &Value) -> Result<()> {
                 .find(|t| Some(t.id.as_str()) == value["trackId"].as_str())
                 .context(crate::i18n::message("error.trackMissing"))?;
             ensure!(
-                !track.locked && track.kind != "video",
+                !track.locked,
                 crate::i18n::message("error.selectCompatibleTrack")
+            );
+            ensure!(
+                track.kind == "voice",
+                crate::i18n::message("error.scriptVoiceTrack")
             );
             let clip_id = text(value, "clipId")?;
             uuid::Uuid::parse_str(clip_id)?;

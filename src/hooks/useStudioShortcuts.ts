@@ -1,5 +1,5 @@
 import { useEffect } from 'react'
-import { shortcutFor } from '../shortcuts'
+import { shortcutFor, targetOwnsKey } from '../shortcuts'
 import type { TimelineTool } from '../timeline/types'
 
 interface Actions {
@@ -19,13 +19,7 @@ interface Actions {
 export function useStudioShortcuts(actions: Actions) {
   useEffect(() => {
     const keydown = (event: KeyboardEvent) => {
-      if (
-        actions.blocked ||
-        event.defaultPrevented ||
-        (event.target as HTMLElement).closest(
-          'input,textarea,select,[contenteditable=true],[role="dialog"]',
-        )
-      )
+      if (actions.blocked || event.defaultPrevented || targetOwnsKey(event.target, event.code))
         return
       const shortcut = shortcutFor(event)
       if (!shortcut) return

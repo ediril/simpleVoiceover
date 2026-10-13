@@ -197,6 +197,9 @@ pub fn run(studio: StudioState, address: &str) -> Result<()> {
                     .permission("core:window:allow-start-dragging")
                     .permission("core:window:allow-set-fullscreen")
                     .permission("core:window:allow-is-fullscreen")
+                    .permission("core:menu:allow-new")
+                    .permission("core:menu:allow-popup")
+                    .permission("core:resources:allow-close")
                     .permission("allow-studio-command")
                     .permission("allow-close-studio"),
             )?;

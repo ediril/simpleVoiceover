@@ -3,6 +3,7 @@ import { t, translateMessage } from '../i18n'
 import type { StudioController } from '../useStudio'
 import { useVoiceList } from '../hooks/useVoiceList'
 import SpeechProblem from './SpeechProblem'
+import VoiceSelect from './VoiceSelect'
 
 type Props = Pick<
   StudioController,
@@ -29,7 +30,6 @@ export default function VoiceoverSettings({
   const [voiceList, reloadVoices] = useVoiceList(loadVoices)
   const changed = url.trim() !== speechUrl || voice.trim() !== defaultVoice
   const listed = voiceList.status === 'ready' ? voiceList.voices : []
-  const voiceOptions = voice && !listed.includes(voice) ? [voice, ...listed] : listed
   const save = async () => {
     setSaving(true)
     setSaveError(null)
@@ -67,17 +67,13 @@ export default function VoiceoverSettings({
             onChange={(event) => setVoice(event.target.value)}
           />
         ) : (
-          <select
+          <VoiceSelect
             value={voice}
+            voices={listed}
+            label={t('settings.speechVoice')}
             disabled={voiceList.status === 'loading'}
-            onChange={(event) => setVoice(event.target.value)}
-          >
-            {voiceOptions.map((option) => (
-              <option key={option} value={option}>
-                {option}
-              </option>
-            ))}
-          </select>
+            onChange={setVoice}
+          />
         )}
       </label>
       {voiceList.status === 'failed' && (
