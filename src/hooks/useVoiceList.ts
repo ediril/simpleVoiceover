@@ -25,9 +25,10 @@ export function useVoiceList(
     })
   }, [loadVoices])
   useEffect(() => {
+    const requests = request
     reload()
     return () => {
-      request.current++
+      requests.current++
     }
   }, [reload])
   return [list, reload] as const

@@ -81,14 +81,14 @@ fn fake_kokoro(chunks: usize, chunk_delay: Duration) -> FakeKokoro {
     FakeKokoro { url, requests }
 }
 
-fn studio(
-    url: &str,
-) -> Result<(
+type Studio = (
     tempfile::TempDir,
     Arc<Mutex<Store>>,
     Generator,
     Receiver<GenerationEvent>,
-)> {
+);
+
+fn studio(url: &str) -> Result<Studio> {
     let temporary = tempfile::tempdir()?;
     let mut store = Store::open(
         temporary.path().join("config"),

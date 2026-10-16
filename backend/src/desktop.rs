@@ -237,11 +237,10 @@ pub fn run(studio: StudioState, address: &str) -> Result<()> {
             let generation_store = studio.store.clone();
             studio.generator.set_sink(move |event| {
                 let _ = generation_handle.emit("studio-generation", &event);
-                if event.state == GenerationState::Done {
-                    if let Ok(store) = generation_store.lock() {
-                        let _ =
-                            generation_handle.emit("studio-snapshot", commands::snapshot(&store));
-                    }
+                if event.state == GenerationState::Done
+                    && let Ok(store) = generation_store.lock()
+                {
+                    let _ = generation_handle.emit("studio-snapshot", commands::snapshot(&store));
                 }
             });
             let close = studio.close_requested.clone();
